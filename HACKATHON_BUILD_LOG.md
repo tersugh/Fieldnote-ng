@@ -3,7 +3,7 @@
 ## Project start — 26 October 2026
 
 **Starting point:** blank project directory created for this event.  
-**Problem:** soybean farmers can notice disease symptoms early but still lose crops when timely, understandable support is hard to reach. This is grounded in Albert's family experience with his grandmother's soybean farm.  
+**Problem:** soybean farmers can notice disease symptoms early but still lose crops when timely, understandable support is hard to reach. This is grounded in my familys' experience with my grandmother's soybean farm.  
 **Theme:** Build for Your World.  
 **Product slice:** farmer records a crop issue with photo + voice/text notes → receives direct recommendations → returns with dated evidence → gets an updated action plan. Soybean is the origin story; the interface supports multiple crops and an open-ended crop name.
 
