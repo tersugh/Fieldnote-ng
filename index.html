@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#183c2b" />
+    <meta name="description" content="Direct AI crop advice and follow-up for Nigerian smallholder farmers." />
+    <title>Fieldnote — Crop health check</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Fieldnote home"><span class="brand-mark">f</span><span>fieldnote</span></a>
+      <div class="topbar-right"><div class="language-switch" role="group" aria-label="Choose language"><button type="button" data-language="en" aria-pressed="true">EN</button><button type="button" data-language="ha" aria-pressed="false">HA</button></div><span class="prototype-label"><span class="status-dot"></span><span id="prototype-copy">Hackathon prototype</span></span></div>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div class="eyebrow"><span class="eyebrow-line"></span><span id="eyebrow-copy">CROP INCIDENT FOLLOW-UP</span></div>
+        <h1 id="headline">Notice a change.<br /><em>Know what to do next.</em></h1>
+        <p class="intro-copy" id="intro-copy">Share a crop photo and field notes to get practical recommendations directly. Return with dated updates to see what changed and decide what to do next.</p>
+        <div class="story-note"><span class="story-icon" aria-hidden="true">✳</span><span id="story-copy">Born from a family story about soybean losses—and designed to serve farmers growing Nigeria’s many commercial crops.</span></div>
+        <div class="model-credit"><span class="model-dot"></span><span id="model-copy">Meta Muse Spark · crop advice and follow-up recommendations</span></div>
+      </section>
+
+      <section class="workspace" id="workspace" aria-label="Crop incident form">
+        <form id="case-form" class="form-card">
+          <div class="card-heading"><div><div class="step-label" id="form-mode">NEW CROP INCIDENT</div><h2 id="form-title">What are you seeing?</h2><p id="active-case-label" class="active-case-label" hidden></p></div><span class="step-number">01</span></div>
+
+          <label class="field-label" for="crop"><span id="crop-label">Which crop?</span> <span class="optional" id="required-crop">Required</span></label>
+          <select id="crop" name="crop" required>
+            <option value="">Select a crop</option>
+            <option value="Soybean">Soybean</option><option value="Cocoa">Cocoa</option><option value="Yam">Yam</option><option value="Cassava">Cassava</option>
+            <option value="Maize">Maize</option><option value="Rice">Rice</option><option value="Oil palm">Oil palm</option><option value="Groundnut">Groundnut</option>
+            <option value="Sesame">Sesame</option><option value="Sorghum">Sorghum</option><option value="Cowpea">Cowpea</option><option value="Cashew">Cashew</option>
+            <option value="Ginger">Ginger</option><option value="Hibiscus">Hibiscus</option><option value="Rubber">Rubber</option><option value="Cotton">Cotton</option>
+            <option value="Shea">Shea</option><option value="Chili pepper">Chili pepper</option><option value="Tomato">Tomato</option><option value="Sugarcane">Sugarcane</option>
+            <option value="Millet">Millet</option><option value="Coffee">Coffee</option><option value="Kola nut">Kola nut</option><option value="Gum arabic">Gum arabic</option>
+            <option value="Turmeric">Turmeric</option><option value="Moringa">Moringa</option><option value="Tobacco">Tobacco</option><option value="Plantain">Plantain</option>
+            <option value="Banana">Banana</option><option value="Mango">Mango</option><option value="Pineapple">Pineapple</option><option value="Egusi">Egusi</option>
+            <option value="Other">Other crop</option>
+          </select>
+          <input id="other-crop" class="other-crop" name="other_crop" type="text" maxlength="80" placeholder="Enter the crop name" aria-label="Other crop name" hidden />
+
+          <label class="field-label" for="photo"><span id="photo-label">A clear crop photo</span> <span class="optional" id="required-photo">Required</span></label>
+          <label class="upload-zone" id="drop-zone" for="photo">
+            <input id="photo" name="photo" type="file" accept="image/jpeg,image/png,image/webp" required />
+            <span class="upload-icon" aria-hidden="true">＋</span>
+            <span class="upload-main" id="upload-main">Choose a crop photo</span>
+            <span class="upload-hint" id="upload-hint">JPG, PNG, or WebP · up to 8 MB</span>
+            <img id="preview" class="preview" alt="Selected crop photo preview" hidden />
+          </label>
+
+          <div class="symptom-heading"><label class="field-label" for="symptoms"><span id="symptoms-label">Describe the change</span> <span class="optional" id="required-symptoms">Required</span></label><button id="voice-button" class="voice-button" type="button" aria-pressed="false"><span aria-hidden="true">●</span> <span id="voice-button-copy">Record voice note</span></button></div>
+          <p id="voice-status" class="voice-status" aria-live="polite">Speak naturally; your transcript will be added here for you to review.</p>
+          <textarea id="symptoms" name="symptoms" rows="4" maxlength="1200" placeholder="For example: yellow spots appeared on older leaves after several rainy days…" required></textarea>
+          <div class="field-footer"><span id="field-hint">What changed, when it started, and whether it is spreading.</span><span id="char-count">0 / 1200</span></div>
+
+          <div class="field-grid">
+            <div><label class="field-label" for="stage"><span id="stage-label">Growth stage</span> <span class="optional" id="optional-stage">Optional</span></label><select id="stage" name="stage"><option value="">Select if known</option><option value="Seedling / early growth">Seedling / early growth</option><option value="Vegetative / leaf growth">Vegetative / leaf growth</option><option value="Flowering">Flowering</option><option value="Fruit, pod, or tuber development">Fruit, pod, or tuber development</option><option value="Maturity / harvest">Maturity / harvest</option></select></div>
+            <div><label class="field-label" for="location"><span id="location-label">Area</span> <span class="optional" id="optional-location">Optional</span></label><input id="location" name="location" type="text" maxlength="100" placeholder="e.g. Makurdi, Benue" /></div>
+          </div>
+
+          <div class="privacy-note"><span aria-hidden="true">◎</span><span id="privacy-copy">Cases and photos are saved in this browser only. Photos go to Meta for analysis; voice audio goes to Meta for transcription. The server does not save them.</span></div>
+          <button id="submit-button" class="submit-button" type="submit"><span id="submit-copy">Create first assessment</span><span aria-hidden="true">↗</span></button>
+          <p class="disclaimer" id="disclaimer-copy">AI crop guidance can be uncertain. Check it against what you see in the field; use any crop-protection product only as its local label directs.</p>
+        </form>
+
+        <aside class="result-card" id="result-card" aria-live="polite">
+          <div class="result-top"><div><div class="step-label" id="result-label">YOUR FIELD CASE</div><h2 id="result-title">Careful guidance, not guesswork.</h2></div><span class="result-icon" aria-hidden="true">↳</span></div>
+          <div id="empty-state" class="empty-state"><div class="leaf-illustration" aria-hidden="true"><span></span><span></span><span></span></div><p id="empty-copy">After you share a photo and symptoms, your field note will appear here.</p></div>
+          <div id="loading-state" class="loading-state" hidden><span class="spinner"></span><div><strong id="loading-title">Looking closely…</strong><p id="loading-copy">Checking the image alongside your notes.</p></div></div>
+          <div id="error-state" class="error-state" hidden></div>
+          <div id="analysis-result" class="analysis-result" hidden></div>
+          <div class="result-foot"><span class="tiny-mark">f</span><span id="result-foot-copy">FIELDNOTE · A FIRST STEP TOWARD TIMELY HELP</span></div>
+        </aside>
+      </section>
+
+      <section class="casebook" aria-labelledby="casebook-title">
+        <div class="casebook-heading"><div><div class="step-label" id="casebook-label">FIELDNOTE CASEBOOK</div><h2 id="casebook-title">Keep track of what changes.</h2><p id="casebook-copy">Cases are stored on this device. Add dated follow-ups to compare progress, keep recommendations together, and print your field plan.</p></div><button id="new-case-button" class="new-case-button" type="button"><span aria-hidden="true">＋</span> <span id="new-case-copy">New incident</span></button></div>
+        <div id="casebook-list" class="casebook-list"><p class="casebook-empty" id="casebook-empty">Your saved crop incidents will appear here on this device.</p></div>
+      </section>
+    </main>
+    <footer><span>FIELDNOTE</span><span id="footer-copy">Built during Meta Global AI Developer Hackathon · 2026</span></footer>
+    <script src="/app.js" defer></script>
+    <div id="print-report" aria-hidden="true"></div>
+  </body>
+</html>

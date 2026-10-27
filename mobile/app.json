@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "Fieldnote",
+    "slug": "fieldnote-android",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "android": {
+      "package": "dev.alberttersugh.fieldnote",
+      "versionCode": 1,
+      "permissions": ["CAMERA", "INTERNET"]
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Fieldnote uses a crop photo you choose to document a field incident.",
+          "cameraPermission": "Fieldnote uses the camera to document a crop incident.",
+          "microphonePermission": false
+        }
+      ],
+      "expo-sqlite"
+    ]
+  }
+}
