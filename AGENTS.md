@@ -1,4 +1,4 @@
-# Codex project instructions
+
 
 ## Product and scope
 
