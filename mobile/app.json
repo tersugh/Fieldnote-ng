@@ -9,7 +9,11 @@
     "android": {
       "package": "dev.alberttersugh.fieldnote",
       "versionCode": 1,
-      "permissions": ["CAMERA", "INTERNET"]
+      "permissions": [
+        "CAMERA",
+        "INTERNET",
+        "RECORD_AUDIO"
+      ]
     },
     "plugins": [
       [
@@ -17,10 +21,17 @@
         {
           "photosPermission": "Fieldnote uses a crop photo you choose to document a field incident.",
           "cameraPermission": "Fieldnote uses the camera to document a crop incident.",
-          "microphonePermission": false
+          "microphonePermission": "Fieldnote records an English voice note only when you choose to transcribe it."
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Fieldnote records an English voice note only when you choose to transcribe it.",
+          "enableBackgroundRecording": false
+        }
+      ]
     ]
   }
 }

@@ -90,3 +90,13 @@ This project began during the Meta Global AI Developer Hackathon on **26 October
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
+
+## Web clarification conversation — 28 October 2026
+
+Below an assessment question, type an answer and choose **Update advice**. This uses the existing POST /api/refine endpoint with the saved visit’s crop, image, original notes, stage, location, previous assessment, question, answer, language, and up to 20 completed earlier Q&A turns. The returned assessment replaces the displayed advice; another question allows another answer. This does not create a photo visit. **Add follow-up** continues to compare a new visit photo through /api/followup.
+
+Drafts are saved in the existing IndexedDB case record as you type. Submitted turns retain the prior assessment, question, answer, date, and revised assessment. Use **View advice / answer question** for the relevant visit in the casebook to reopen its conversation after reloading. A failed request keeps the current advice and draft; retrying reuses the pending turn. If browser storage fails, the draft stays visible and the app reports that it was not saved. IndexedDB writes are now acknowledged only after transaction commit.
+
+The optional English voice button uses the same browser recording, WAV conversion, and /api/transcribe flow as field notes. It asks permission to send audio, appends editable text to the chosen field, and leaves typed text intact on failure. Switching cases or languages cancels the old recording/transcription session so a late transcript cannot enter another answer. Hausa speech remains unverified and disabled; Hausa typed answers remain available. Model questions, answers, and revised advice are escaped before HTML rendering.
+
+No web-specific test suite was present. Manual checks pending: initial assessment stays visible; two successive answers update advice and preserve ordered history; reload and reopen an earlier visit; server/network failure preserves the draft and old advice; retry creates no duplicate turn; English voice transcript is editable and failure does not block typing; Hausa disables voice but accepts text; text containing HTML appears literally; photo follow-up still creates a separate visit. No commands or browser tests were run.

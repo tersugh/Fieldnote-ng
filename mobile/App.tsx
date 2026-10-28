@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
+  Modal,
   Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
+  type ScrollViewInstance,
   Share,
   StatusBar,
   StyleSheet,
@@ -15,18 +18,31 @@ import {
   View,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as ImageManipulator from 'expo-image-manipulator';
+import { ImageManipulator, SaveFormat, type ImageManipulatorContext, type ImageRef } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import * as SQLite from 'expo-sqlite';
+import { File } from 'expo-file-system';
+import { useAudioStream, requestRecordingPermissionsAsync, setAudioModeAsync } from 'expo-audio';
+import { prepareTranscriptionWav } from './voice';
 
 declare const process: { env: { EXPO_PUBLIC_API_BASE_URL?: string } };
 
 type Assessment = {
   visual_observations: string;
-  possible_causes: { name: string; likelihood: string }[];
+  possible_causes: { name: string; likelihood: string; evidence?: string; what_to_check?: string }[];
   next_steps: string[];
   urgency: string;
   escalation?: string;
+  follow_up_question?: string;
+};
+
+type RefinementTurn = {
+  id: string;
+  date: string;
+  question: string;
+  answer: string;
+  previousAssessment: Assessment;
+  assessment?: Assessment;
 };
 
 type Observation = {
@@ -37,6 +53,7 @@ type Observation = {
   photoUri: string;
   mimeType: string;
   assessment?: Assessment;
+  refinements?: RefinementTurn[];
 };
 
 type CropCase = {
@@ -49,10 +66,26 @@ type CropCase = {
 };
 
 type StoredCase = { record_json: string };
-type PickedPhoto = { uri: string; mimeType: string; fileSize?: number | null };
+type PickedPhoto = { uri: string; mimeType: string; name: string; fileSize?: number | null };
 
 const API_BASE_URL = (process.env.EXPO_PUBLIC_API_BASE_URL || '').replace(/\/$/, '');
 let databasePromise: Promise<SQLite.SQLiteDatabase> | undefined;
+const APP_REVISION = 'android-parity-photo-v2';
+
+function requirePhotoApi(method: unknown, name: string): void {
+  if (typeof method !== 'function') {
+    throw new Error(`${name} is unavailable in this runtime. This project requires an Expo Go runtime compatible with SDK 58.`);
+  }
+}
+
+async function photoStep<T>(step: string, operation: () => T | Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`[${APP_REVISION}] ${step}: ${detail}`);
+  }
+}
 
 const copy = {
   en: {
@@ -92,6 +125,87 @@ const copy = {
     chooseLanguage: 'Harshe', latest: 'Ziyara ta ƙarshe', visits: 'ziyara',
   },
 } as const;
+
+const webCopy = {
+  en: {
+    prototype: 'Hackathon prototype', eyebrow: 'CROP INCIDENT FOLLOW-UP', headline: 'Notice a change.<br /><em>Know what to do next.</em>',
+    intro: 'Share a crop photo and field notes to get practical recommendations directly. Return with dated updates to see what changed and decide what to do next.',
+    story: 'Born from a family story about soybean losses—and built to put timely, understandable crop advice directly in farmers’ hands.',
+    model: 'Meta Muse Spark · crop advice and follow-up recommendations', formMode: 'NEW CROP INCIDENT', formTitle: 'What are you seeing?',
+    cropLabel: 'Which crop?', required: 'Required', selectCrop: 'Select a crop', otherCrop: 'Other crop', otherCropPlaceholder: 'Enter the crop name',
+    photoLabel: 'A clear crop photo', choosePhoto: 'Choose a crop photo', photoHint: 'JPG, PNG, or WebP · up to 8 MB',
+    symptomsLabel: 'Describe the change', symptomsPlaceholder: 'For example: yellow spots appeared on older leaves after several rainy days…',
+    fieldHint: 'What changed, when it started, and whether it is spreading.', stageLabel: 'Growth stage', optional: 'Optional',
+    selectStage: 'Select if known', locationLabel: 'Area', locationPlaceholder: 'e.g. Makurdi, Benue',
+    privacy: 'Cases and photos are saved in this browser only. Photos go to Meta for analysis; voice audio goes to Meta for transcription. The server does not save them.',
+    submit: 'Get crop advice', disclaimer: 'AI crop guidance can be uncertain. Check it against what you see in the field; use any crop-protection product only as its local label directs.',
+    resultLabel: 'YOUR FIELD CASE', resultTitle: 'Careful guidance, not guesswork.', empty: 'After you share a photo and symptoms, your field note will appear here.',
+    loadingTitle: 'Looking closely…', loadingCopy: 'Checking the image alongside your notes.', resultFoot: 'FIELDNOTE · A FIRST STEP TOWARD TIMELY HELP',
+    casebookLabel: 'FIELDNOTE CASEBOOK', casebookTitle: 'Keep track of what changes.',
+    casebookCopy: 'Cases are stored on this device. Follow progress and recommendations, then share the case with an extension worker if you want a second opinion.',
+    newCase: 'New incident', casebookEmpty: 'Your saved crop incidents will appear here on this device.',
+    footer: 'Built during Meta Global AI Developer Hackathon · 2026', voiceButton: 'Record voice note',
+    voiceHint: 'Speak in English; your transcript will be added here for review.', voiceHausaOff: 'Hausa voice transcription is not verified. Type your note in Hausa instead.', voiceButtonHausa: 'Hausa voice off',
+    voiceUnsupported: 'Voice recording is not supported in this browser. Type your observations instead.', voiceDenied: 'Microphone access was unavailable. Allow microphone access or type your observations.',
+    voiceRecording: 'Stop recording', voiceTranscribing: 'Transcribing…', voiceConverting: 'Converting your voice note to editable text…',
+    voiceReview: 'Transcript added. Review or edit it before submitting your field note.', voiceFailed: 'Could not transcribe this recording. Type your observations instead.',
+    newFollowup: 'Choose a new visit photo', comparing: 'Compare with earlier visit', create: 'Get crop advice',
+    firstLoading: 'Reviewing first visit…', followLoading: 'Comparing visits…', visit: 'visit', visits: 'visits',
+    updated: 'Updated', noLocation: 'Location not added', print: 'Print field plan', share: 'Share with extension worker', addFollowup: 'Add follow-up',
+    observation: 'What stands out', change: 'What changed between visits', causes: 'Possible explanations', checks: 'Check:',
+    noCauses: 'The available photos do not support a clear shortlist yet.', next: 'What to do now', urgency: 'Urgency and warning signs',
+    followQuestion: 'One question to improve this advice:', disclaimerResult: 'AI-generated crop guidance may be uncertain. Recheck the field after acting; follow local product labels and precautions.',
+    likelihood: 'likelihood', low: 'Low', moderate: 'Moderate', high: 'High', uncertain: 'Uncertain',
+    noChecks: 'No specific checks were suggested.', startMode: 'NEW CROP INCIDENT', followMode: 'FOLLOW-UP VISIT',
+    activeCase: (crop: string, count: number) => `${crop} · ${count} previous ${count === 1 ? 'visit' : 'visits'}`,
+    chooseLanguage: 'Choose language', ariaHome: 'Fieldnote home', ariaWorkspace: 'Crop incident form',
+    areaNoLocation: 'Location not added', errorCrop: 'Choose a crop or enter its name.',
+  },
+  ha: {
+    prototype: 'Samfurin gwajin hackathon', eyebrow: 'BINCIKEN RAHOTON MATSALAR GONA', headline: 'Ka lura da canji.<br /><em>Ka san mataki na gaba.</em>',
+    intro: 'Aika hoton amfanin gona da bayanin gona domin samun shawarwari masu amfani kai tsaye. Ka dawo da sabon bayani mai kwanan wata domin ganin canji da sanin mataki na gaba.',
+    story: 'An samo ra’ayin ne daga labarin asarar waken soya a gonar kakata. An gina Fieldnote domin kai shawarar noma mai sauƙin fahimta kai tsaye ga manoma.',
+    model: 'Meta Muse Spark · shawarwarin noma da bibiyar canji', formMode: 'SABON RAHOTON GONA', formTitle: 'Me ka lura da shi?',
+    cropLabel: 'Wane amfanin gona?', required: 'Dole', selectCrop: 'Zaɓi amfanin gona', otherCrop: 'Wani amfanin gona', otherCropPlaceholder: 'Rubuta sunan amfanin gonar',
+    photoLabel: 'Hoto bayyananne na shukar', choosePhoto: 'Zaɓi hoton shuka', photoHint: 'JPG, PNG ko WebP · har zuwa 8 MB',
+    symptomsLabel: 'Bayyana abin da ya canza', symptomsPlaceholder: 'Misali: ganyen da suka tsufa sun fara yin rawaya bayan ruwan sama…',
+    fieldHint: 'Me ya canza, yaushe aka fara gani, kuma ko yana ƙaruwa.', stageLabel: 'Matakin girma', optional: 'Zaɓi idan kana so',
+    selectStage: 'Zaɓi idan ka sani', locationLabel: 'Wuri', locationPlaceholder: 'Misali: Kano',
+    privacy: 'Ana adana rahotanni da hotuna a wannan burauzar kawai. Ana aika hotuna ga Meta idan ka nemi tantancewa. Rikodin muryar Turanci yana zuwa ga Meta domin mayar da shi rubutu; ba a tabbatar da gane muryar Hausa ba tukuna.',
+    submit: 'Nemi shawarar noma', disclaimer: 'Shawarar AI na iya yin kuskure. Ka duba abin da ke faruwa a gona; idan za ka yi amfani da maganin gona, bi umarnin lakabinsa na gida.',
+    resultLabel: 'RAHOTON GONARKA', resultTitle: 'Jagora cikin kulawa, ba zato kawai ba.', empty: 'Rahotonka zai bayyana a nan bayan ka aika hoto da bayanin abin da ka lura da shi.',
+    loadingTitle: 'Ana duba hoton…', loadingCopy: 'Ana nazarin hoton tare da bayaninka.', resultFoot: 'FIELDNOTE · MATAKIN FARKO NA NEMAN TAIMAKO DA WURI',
+    casebookLabel: 'LITTAFIN RAHOTON GONA', casebookTitle: 'Ka bibiyi abin da ke canzawa.',
+    casebookCopy: 'Ana adana rahotanni a wannan na’ura. Ka bibiyi ci gaba da shawarwari, sannan ka aika rahoton ga jami’in noma idan kana son ƙarin ra’ayi.',
+    newCase: 'Sabon rahoto', casebookEmpty: 'Rahotannin gonakinka da ka adana za su bayyana a nan.',
+    footer: 'An gina shi a Meta Global AI Developer Hackathon · 2026', voiceButton: 'Yi rikodin murya',
+    voiceHint: 'Yi magana da Turanci; za a nuna rubutun nan domin ka duba.', voiceHausaOff: 'Ba a tabbatar da gane muryar Hausa ba. Ka rubuta bayaninka da Hausa.', voiceButtonHausa: 'Ba a buɗe muryar Hausa ba',
+    voiceUnsupported: 'Wannan burauzar ba ta goyon bayan rikodin murya. Ka rubuta abin da ka lura da shi.', voiceDenied: 'Ba a samu damar amfani da makirufo ba. Ka ba da izini ko ka rubuta bayaninka.',
+    voiceRecording: 'Dakatar da rikodi', voiceTranscribing: 'Ana mayar da murya rubutu…', voiceConverting: 'Ana shirya rubutun murya…',
+    voiceReview: 'An saka rubutun. Ka duba ko gyara shi kafin aika rahoto.', voiceFailed: 'Ba a iya mayar da wannan rikodi rubutu ba. Ka rubuta bayaninka.',
+    newFollowup: 'Zaɓi sabon hoton ziyara', comparing: 'Kwatanta da ziyarar baya', create: 'Nemi shawarar noma',
+    firstLoading: 'Ana duba ziyarar farko…', followLoading: 'Ana kwatanta ziyarori…', visit: 'ziyara', visits: 'ziyarori',
+    updated: 'An sabunta', noLocation: 'Ba a saka wuri ba', print: 'Buga tsarin aikin gona', share: 'Aika wa jami’in noma', addFollowup: 'Ƙara ziyara',
+    observation: 'Abin da aka lura da shi', change: 'Canjin da aka gani tsakanin ziyarori', causes: 'Abubuwan da ka iya haddasawa', checks: 'Abin dubawa:',
+    noCauses: 'Hotunan ba su isa a tantance abubuwan da ka iya haddasawa ba tukuna.', next: 'Abin yi yanzu', urgency: 'Gaggawa da alamomin lura',
+    followQuestion: 'Tambayar da za ta inganta shawarar:', disclaimerResult: 'Taimakon tantancewa da AI ne, ba tabbataccen ganewar cuta ba. Kada a yanke shawarar magani bisa wannan sakamakon kaɗai.',
+    likelihood: 'yiwuwar faruwa', low: 'Ƙaranci', moderate: 'Matsakaici', high: 'Mai yawa', uncertain: 'Ba a tabbatar ba',
+    noChecks: 'Ba a ba da takamaiman abin dubawa ba.', startMode: 'SABON RAHOTON GONA', followMode: 'ZIYARAR BIYO-BAYA',
+    activeCase: (crop: string, count: number) => `${crop} · ziyarori ${count} da suka gabata`,
+    chooseLanguage: 'Zaɓi harshe', ariaHome: 'Shafin farko na Fieldnote', ariaWorkspace: 'Fom ɗin rahoton gona',
+    areaNoLocation: 'Ba a saka wuri ba', errorCrop: 'Zaɓi amfanin gona ko rubuta sunansa.',
+  },
+};
+
+
+const cropNames: { ha: Record<string, string> } = {
+  ha: { Soybean: 'Waken soya', Cocoa: 'Koko', Yam: 'Doya', Cassava: 'Rogo', Maize: 'Masara', Rice: 'Shinkafa', 'Oil palm': 'Dabino mai (oil palm)', Groundnut: 'Gyada', Sesame: 'Ridi', Sorghum: 'Dawa', Cowpea: 'Wake', Cashew: 'Kashu (cashew)', Ginger: 'Citta', Hibiscus: 'Karkade', Rubber: 'Roba', Cotton: 'Auduga', Shea: 'Kadanya (shea)', 'Chili pepper': 'Barkono mai zafi', Tomato: 'Tumatir', Sugarcane: 'Rake', Millet: 'Gero', Coffee: 'Kofi', 'Kola nut': 'Goro', 'Gum arabic': 'Danko (gum arabic)', Turmeric: 'Kurkum', Moringa: 'Zogale', Tobacco: 'Taba', Plantain: 'Ayaba babba (plantain)', Banana: 'Ayaba', Mango: 'Mangwaro', Pineapple: 'Abarba', Egusi: 'Agushi' },
+};
+
+
+const CROPS: string[] = ["Soybean","Cocoa","Yam","Cassava","Maize","Rice","Oil palm","Groundnut","Sesame","Sorghum","Cowpea","Cashew","Ginger","Hibiscus","Rubber","Cotton","Shea","Chili pepper","Tomato","Sugarcane","Millet","Coffee","Kola nut","Gum arabic","Turmeric","Moringa","Tobacco","Plantain","Banana","Mango","Pineapple","Egusi","Other"];
+const STAGES: string[] = ["Seedling / early growth","Vegetative / leaf growth","Flowering","Fruit, pod, or tuber development","Maturity / harvest"];
+const HA_STAGES = ['Matashin shuka', 'Girman ganye', 'Fure', 'Samar da ’ya’ya ko ƙwaya', 'Balaga ko girbi'];
 
 type Language = keyof typeof copy;
 
@@ -135,11 +249,14 @@ function newId(): string {
 }
 
 async function savePhotoPermanently(photo: PickedPhoto, observationId: string): Promise<string> {
-  if (!FileSystem.documentDirectory) throw new Error('Phone storage is unavailable.');
-  const extension = photo.mimeType === 'image/png' ? 'png' : photo.mimeType === 'image/webp' ? 'webp' : 'jpg';
-  const target = `${FileSystem.documentDirectory}fieldnote-${observationId}.${extension}`;
-  await FileSystem.copyAsync({ from: photo.uri, to: target });
-  return target;
+  return photoStep('Copy photo into app-private storage (FileSystem.copyAsync)', async () => {
+    if (!FileSystem.documentDirectory) throw new Error('Phone storage is unavailable.');
+    requirePhotoApi(FileSystem.copyAsync, 'FileSystem.copyAsync');
+    const extension = photo.mimeType === 'image/png' ? 'png' : photo.mimeType === 'image/webp' ? 'webp' : 'jpg';
+    const target = `${FileSystem.documentDirectory}fieldnote-${observationId}.${extension}`;
+    await FileSystem.copyAsync({ from: photo.uri, to: target });
+    return target;
+  });
 }
 
 async function imageAsDataUrl(observation: Observation): Promise<string> {
@@ -147,6 +264,28 @@ async function imageAsDataUrl(observation: Observation): Promise<string> {
     encoding: FileSystem.EncodingType.Base64,
   });
   return `data:${observation.mimeType};base64,${base64}`;
+}
+
+
+function Dropdown({ label, value, options, onChange, disabled, closeLabel }: {
+  label: string; value: string; options: { value: string; label: string }[];
+  onChange: (value: string) => void; disabled?: boolean; closeLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return <>
+    <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled, expanded: open }} disabled={disabled} onPress={() => setOpen(true)} style={[styles.input, styles.select, disabled && styles.disabled]}>
+      <Text style={[styles.selectText, !value && styles.placeholder]}>{options.find((option) => option.value === value)?.label || value}</Text><Text style={styles.selectArrow}>⌄</Text>
+    </Pressable>
+    <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+      <View style={styles.modalBackdrop}><View style={styles.modalCard} accessibilityViewIsModal>
+        <Text style={styles.sectionTitle}>{label}</Text>
+        <ScrollView>{options.map((option) => <Pressable key={option.value} accessibilityRole="radio" accessibilityState={{ checked: value === option.value }} onPress={() => { onChange(option.value); setOpen(false); }} style={[styles.option, value === option.value && styles.optionSelected]}>
+          <Text style={styles.body}>{option.label}{value === option.value ? '  ✓' : ''}</Text>
+        </Pressable>)}</ScrollView>
+        <Pressable accessibilityRole="button" onPress={() => setOpen(false)} style={styles.outlineButton}><Text style={styles.outlineText}>{closeLabel}</Text></Pressable>
+      </View></View>
+    </Modal>
+  </>;
 }
 
 export default function App() {
@@ -160,19 +299,208 @@ export default function App() {
   const [photo, setPhoto] = useState<PickedPhoto | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
+  const [selectedObservationId, setSelectedObservationId] = useState<string | null>(null);
+  const [refineAnswer, setRefineAnswer] = useState('');
+  const refineSubmitting = useRef(false);
   const t = copy[language];
+
+  const [cropChoice, setCropChoice] = useState('');
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [voiceState, setVoiceState] = useState<'idle' | 'permission' | 'recording' | 'transcribing' | 'success' | 'error'>('idle');
+  const [voiceMessage, setVoiceMessage] = useState('');
+  const [voiceDiagnostics, setVoiceDiagnostics] = useState('');
+  const symptomsRef = useRef(symptoms);
+  symptomsRef.current = symptoms;
+  const [seconds, setSeconds] = useState(0);
+  const { stream } = useAudioStream({ sampleRate: 24000, channels: 1, encoding: 'int16' });
+  const voicePhase = useRef('idle');
+  const voiceSession = useRef(0);
+  const voiceFile = useRef<string | null>(null);
+  const voiceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const voiceClock = useRef<ReturnType<typeof setInterval> | null>(null);
+  const voiceRequest = useRef<AbortController | null>(null);
+  const scroll = useRef<ScrollViewInstance | null>(null);
+  const w = webCopy[language];
+  const voiceActive = ['permission', 'recording', 'transcribing'].includes(voiceState);
+  const locked = busy || photoBusy || voiceActive;
+
+  function clearVoiceTimers() {
+    if (voiceTimer.current) clearTimeout(voiceTimer.current);
+    if (voiceClock.current) clearInterval(voiceClock.current);
+    voiceTimer.current = null;
+    voiceClock.current = null;
+  }
+
+  async function removeVoiceFile() {
+    const uri = voiceFile.current;
+    voiceFile.current = null;
+    if (uri) await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+  }
+
+  useEffect(() => {
+    const audioSubscription = stream.addListener('audioStreamStatus', ({ isStreaming }) => {
+      if (!isStreaming && voicePhase.current === 'recording') {
+        voiceSession.current += 1;
+        clearVoiceTimers();
+        void removeVoiceFile();
+        voicePhase.current = 'idle';
+        setVoiceState('error');
+        setVoiceMessage('Microphone recording was interrupted. Please try again or type your observations.');
+        void setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+      }
+    });
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active' && ['recording', 'transcribing'].includes(voicePhase.current)) {
+        voiceSession.current += 1;
+        clearVoiceTimers();
+        voiceRequest.current?.abort();
+        try { stream.stop(); } catch { /* Already interrupted by the OS. */ }
+        void removeVoiceFile();
+        voicePhase.current = 'idle';
+        setVoiceState('error');
+        setVoiceMessage('Recording or transcription interrupted. Your typed notes are unchanged; try again.');
+        void setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+      }
+    });
+    return () => {
+      subscription.remove();
+      audioSubscription.remove();
+      voiceSession.current += 1;
+      clearVoiceTimers();
+      voiceRequest.current?.abort();
+      try { stream.stop(); } catch { /* The hook may already have released the stream. */ }
+      void removeVoiceFile();
+      void setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+    };
+  }, [stream]);
+
+  async function finishVoice() {
+    if (voicePhase.current !== 'recording') return;
+    voicePhase.current = 'transcribing';
+    clearVoiceTimers();
+    const session = voiceSession.current;
+    setVoiceState('transcribing');
+    setVoiceMessage('Transcribing your English voice note…');
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // Native stopFileRecordingAsync syncs/closes the WAV before resolving. Never read a live file.
+      const recording = await stream.stopFileRecordingAsync();
+      stream.stop();
+      if (session !== voiceSession.current) return;
+      const prepared = prepareTranscriptionWav(await new File(recording.uri).arrayBuffer(), recording);
+      const info = prepared.info;
+      setVoiceDiagnostics(
+        'WAV: ' + info.duration.toFixed(1) + ' s · ' + info.sampleRate + ' Hz · mono · ' + info.sampleWidth
+        + '-bit PCM · peak ' + (info.peak * 100).toFixed(2) + '% · RMS ' + (info.rms * 100).toFixed(2)
+        + '% · non-silent (not proof of speech). Source: ' + info.sourceRate + ' Hz / ' + info.sourceChannels + ' channel(s).'
+      );
+      const audioDataUrl = prepared.dataUrl;
+      if (session !== voiceSession.current) return;
+      const controller = new AbortController();
+      voiceRequest.current = controller;
+      timeout = setTimeout(() => controller.abort(), 70000);
+      const response = await fetch(API_BASE_URL + '/api/transcribe', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audio_data_url: audioDataUrl, language: 'en' }), signal: controller.signal,
+      });
+      const body = await response.json();
+      if (session !== voiceSession.current) return;
+      if (!response.ok) throw new Error(body.detail || 'Voice transcription failed. Please try again.');
+      if (typeof body.transcript !== 'string' || !body.transcript.trim()) throw new Error('The server returned no transcript. Your typed note is unchanged; try a short English sentence or continue typing.');
+      const transcript = body.transcript.trim();
+      const combined = [symptomsRef.current.trim(), transcript].filter(Boolean).join(' ');
+      if (combined.length > 1200) throw new Error('The transcript exceeds the 1,200-character note limit. Shorten your note and record a shorter message. Your existing text is unchanged.');
+      setSymptoms(combined);
+      setVoiceState('success');
+      setVoiceMessage('Transcript added. Review or edit it before submitting your field note.');
+    } catch (error) {
+      if (session === voiceSession.current) {
+        setVoiceState('error');
+        setVoiceMessage(error instanceof Error && error.name !== 'AbortError' ? error.message : 'Transcription timed out or was interrupted. Check your connection and try again, or type your note.');
+      }
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      if (session === voiceSession.current) {
+        try { stream.stop(); } catch { /* Already stopped. */ }
+        await removeVoiceFile();
+        await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+        voiceRequest.current = null;
+        voicePhase.current = 'idle';
+      }
+    }
+  }
+
+  async function startVoice() {
+    if (language !== 'en' || voicePhase.current !== 'idle' || busy || photoBusy) return;
+    if (!API_BASE_URL) {
+      setVoiceState('error');
+      setVoiceMessage('Voice transcription needs a server connection. You can still type and save a field note offline.');
+      return;
+    }
+    voicePhase.current = 'permission';
+    const session = ++voiceSession.current;
+    setVoiceState('permission');
+    setVoiceDiagnostics('');
+    setVoiceMessage('Requesting microphone permission…');
+    try {
+      const permission = await requestRecordingPermissionsAsync();
+      if (session !== voiceSession.current) return;
+      if (!permission.granted) throw new Error('Microphone permission is needed. Allow it in phone settings or type your observations.');
+      if (AppState.currentState !== 'active') throw new Error('Return to Fieldnote to record your voice note.');
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      if (session !== voiceSession.current) {
+        await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+        return;
+      }
+      await stream.start();
+      if (session !== voiceSession.current) { stream.stop(); return; }
+      const recording = await stream.startFileRecordingAsync({ format: 'wav', directory: 'cache' });
+      voiceFile.current = recording.uri;
+      if (session !== voiceSession.current) { stream.stop(); await removeVoiceFile(); return; }
+      voicePhase.current = 'recording';
+      setSeconds(0);
+      setVoiceState('recording');
+      setVoiceMessage('Recording in English. Stop to send this audio to Meta for transcription.');
+      voiceClock.current = setInterval(() => setSeconds((value) => Math.min(30, value + 1)), 1000);
+      voiceTimer.current = setTimeout(() => void finishVoice(), 30000);
+    } catch (error) {
+      if (session !== voiceSession.current) return;
+      clearVoiceTimers();
+      try { stream.stop(); } catch { /* Capture may not have started. */ }
+      await removeVoiceFile();
+      await setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+      voicePhase.current = 'idle';
+      setVoiceState('error');
+      setVoiceMessage(error instanceof Error ? error.message : 'Could not record audio. Type your observations or try again.');
+    }
+  }
+
+  function requestVoice() {
+    if (voicePhase.current === 'recording') { void finishVoice(); return; }
+    Alert.alert('English voice note', 'Record up to 30 seconds. Stopping the recording (or reaching 30 seconds) sends the audio through the Fieldnote server to Meta for transcription. You can review the text before saving.', [
+      { text: 'Cancel', style: 'cancel' }, { text: 'Record and transcribe', onPress: () => void startVoice() },
+    ]);
+  }
+
 
   useEffect(() => {
     loadCases().then(setCases).catch(() => setStatus(t.error));
   }, []);
 
-  const latestAssessment = useMemo(() => {
-    const latest = activeCase?.observations.at(-1);
-    return latest?.assessment;
-  }, [activeCase]);
+  const resultObservation = useMemo(() => activeCase?.observations.find((item) => item.id === selectedObservationId)
+    || activeCase?.observations.at(-1), [activeCase, selectedObservationId]);
+  const latestAssessment = resultObservation?.assessment;
 
   function startNewCase() {
+    if (locked) return;
+    setVoiceDiagnostics('');
+    setCropChoice('');
+    setVoiceState('idle');
+    setVoiceMessage('');
+    scroll.current?.scrollTo({ y: 0, animated: true });
     setActiveCase(null);
+    setSelectedObservationId(null);
+    setRefineAnswer('');
     setCrop('');
     setLocation('');
     setStage('');
@@ -181,8 +509,18 @@ export default function App() {
     setStatus('');
   }
 
-  function continueCase(record: CropCase) {
+  function continueCase(record: CropCase, observationId?: string) {
+    if (locked) return;
+    setVoiceDiagnostics('');
+    setCropChoice(CROPS.includes(record.crop) ? record.crop : 'Other');
+    setVoiceState('idle');
+    setVoiceMessage('');
+    setStatus('');
+    scroll.current?.scrollTo({ y: 0, animated: true });
     setActiveCase(record);
+    const visit = record.observations.find((item) => item.id === observationId) || record.observations.at(-1);
+    setSelectedObservationId(visit?.id || null);
+    setRefineAnswer(visit?.refinements?.find((turn) => !turn.assessment)?.answer || '');
     setCrop(record.crop);
     setLocation(record.location);
     setStage('');
@@ -192,32 +530,94 @@ export default function App() {
   }
 
   async function choosePhoto(useCamera: boolean) {
+    if (locked) return;
+    setPhotoBusy(true);
+    let context: ImageManipulatorContext | undefined;
+    let rendered: ImageRef | undefined;
     try {
-      const permission = useCamera
-        ? await ImagePicker.requestCameraPermissionsAsync()
-        : await ImagePicker.requestMediaLibraryPermissionsAsync();
+      const permission = await photoStep(useCamera ? 'Camera permission' : 'Gallery permission', () => {
+        if (useCamera) {
+          requirePhotoApi(ImagePicker.requestCameraPermissionsAsync, 'ImagePicker.requestCameraPermissionsAsync');
+          return ImagePicker.requestCameraPermissionsAsync();
+        }
+        requirePhotoApi(ImagePicker.requestMediaLibraryPermissionsAsync, 'ImagePicker.requestMediaLibraryPermissionsAsync');
+        return ImagePicker.requestMediaLibraryPermissionsAsync();
+      });
       if (!permission.granted) {
         Alert.alert('Permission needed', 'Allow photo access to attach crop evidence.');
         return;
       }
       const options: ImagePicker.ImagePickerOptions = { mediaTypes: ['images'], quality: 0.65, allowsEditing: false };
-      const result = useCamera
-        ? await ImagePicker.launchCameraAsync(options)
-        : await ImagePicker.launchImageLibraryAsync(options);
-      if (result.canceled || !result.assets[0]) return;
-      const asset = result.assets[0];
-      const context = ImageManipulator.manipulate(asset.uri, { maxWidth: 1600, maxHeight: 1600 });
-      const rendered = await context.renderAsync();
-      const compressed = await rendered.saveAsync({ format: ImageManipulator.SaveFormat.JPEG, compress: 0.65 });
-      setPhoto({ uri: compressed.uri, mimeType: 'image/jpeg' });
+      const result = await photoStep(useCamera ? 'Open camera' : 'Open gallery', () => {
+        if (useCamera) {
+          requirePhotoApi(ImagePicker.launchCameraAsync, 'ImagePicker.launchCameraAsync');
+          return ImagePicker.launchCameraAsync(options);
+        }
+        requirePhotoApi(ImagePicker.launchImageLibraryAsync, 'ImagePicker.launchImageLibraryAsync');
+        return ImagePicker.launchImageLibraryAsync(options);
+      });
+      if (result.canceled) return;
+      const asset = await photoStep('Read selected photo', () => {
+        const selected = result.assets?.[0];
+        if (!selected?.uri || !(selected.width > 0) || !(selected.height > 0)) {
+          throw new Error('The picker returned no usable photo or dimensions. Please choose another image.');
+        }
+        return selected;
+      });
+      // This is the named native object export, not the package namespace.
+      const photoContext = await photoStep('Load photo (ImageManipulator.manipulate)', () => {
+        requirePhotoApi(ImageManipulator?.manipulate, 'ImageManipulator.manipulate');
+        return ImageManipulator.manipulate(asset.uri, { maxWidth: 1600, maxHeight: 1600 });
+      });
+      context = photoContext;
+      if (Math.max(asset.width, asset.height) > 1600) {
+        await photoStep('Resize photo (context.resize)', () => {
+          requirePhotoApi(photoContext?.resize, 'ImageManipulatorContext.resize');
+          photoContext.resize(asset.width >= asset.height ? { width: 1600 } : { height: 1600 });
+        });
+      }
+      const image = await photoStep('Render photo (context.renderAsync)', () => {
+        requirePhotoApi(photoContext?.renderAsync, 'ImageManipulatorContext.renderAsync');
+        return photoContext.renderAsync();
+      });
+      rendered = image;
+      const compressed = await photoStep('Save JPEG (image.saveAsync)', () => {
+        requirePhotoApi(image?.saveAsync, 'ImageRef.saveAsync');
+        return image.saveAsync({ format: SaveFormat.JPEG, compress: 0.65 });
+      });
+      await photoStep('Verify prepared JPEG (FileSystem.getInfoAsync)', async () => {
+        if (!compressed.uri || !(compressed.width > 0) || !(compressed.height > 0)
+            || Math.max(compressed.width, compressed.height) > 1600) {
+          throw new Error('The image processor did not return a valid JPEG within the 1600-pixel limit.');
+        }
+        requirePhotoApi(FileSystem.getInfoAsync, 'FileSystem.getInfoAsync');
+        const info = await FileSystem.getInfoAsync(compressed.uri);
+        if (!info.exists || info.size === 0 || info.size > 8 * 1024 * 1024) {
+          throw new Error('The prepared JPEG is missing, empty, or larger than 8 MB. Choose another photo.');
+        }
+      });
+      setPhoto({ uri: compressed.uri, mimeType: 'image/jpeg', name: asset.fileName || (useCamera ? 'Camera photo.jpg' : 'Selected photo.jpg') });
       setStatus('');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not prepare this photo.';
       Alert.alert('Photo unavailable', message);
+    } finally {
+      // Cleanup failures must not turn a successfully saved JPEG into a picker failure.
+      for (const resource of [rendered, context]) {
+        if (!resource) continue;
+        try {
+          requirePhotoApi(resource.release, 'ImageManipulator shared-object release');
+          resource.release();
+        } catch (error) {
+          if (__DEV__) console.warn(`[${APP_REVISION}] Photo cleanup:`, error);
+        }
+      }
+      setPhotoBusy(false);
     }
   }
 
   async function saveFieldNote(requestMetaReview: boolean) {
+    if (locked) return;
     if (!crop.trim()) return Alert.alert(t.cropRequired);
     if (!photo || !symptoms.trim()) return Alert.alert(t.photoRequired);
     setBusy(true);
@@ -244,6 +644,8 @@ export default function App() {
           };
       await persistCase(record);
       setActiveCase(record);
+      setSelectedObservationId(observation.id);
+      setRefineAnswer('');
       setCases((current) => [record, ...current.filter((item) => item.id !== record.id)]);
       setSymptoms('');
       setPhoto(null);
@@ -259,6 +661,7 @@ export default function App() {
   }
 
   async function requestReview(record: CropCase, observationId?: string) {
+    if (voiceActive || photoBusy) return;
     if (!API_BASE_URL) {
       setStatus(t.config);
       return;
@@ -307,12 +710,91 @@ export default function App() {
       };
       await persistCase(updated);
       setActiveCase(updated);
+      setSelectedObservationId(target.id);
+      setRefineAnswer('');
       setCases((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
       setStatus(t.reviewed);
     } catch (error) {
       const message = error instanceof Error ? error.message : t.offline;
       setStatus(`${t.offline} ${message}`);
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateAdvice(sendToMeta: boolean) {
+    if (locked || refineSubmitting.current || !activeCase || !resultObservation?.assessment) return;
+    const previousAssessment = resultObservation.assessment;
+    const question = resultObservation.assessment.follow_up_question?.trim();
+    const answer = refineAnswer.trim();
+    if (!question || !answer) {
+      Alert.alert(language === 'ha' ? 'Rubuta amsarka da farko.' : 'Type an answer before updating advice.');
+      return;
+    }
+    refineSubmitting.current = true;
+    setBusy(true);
+    setStatus('');
+    let answerSaved = false;
+    try {
+      const record = activeCase;
+      const target = resultObservation;
+      const priorTurns = target.refinements || [];
+      const pending = priorTurns.find((turn) => !turn.assessment);
+      const turn: RefinementTurn = {
+        id: pending?.id || newId(), date: new Date().toISOString(), question, answer,
+        previousAssessment,
+      };
+      const turns = [...priorTurns.filter((item) => item.id !== pending?.id), turn];
+      const saved: CropCase = { ...record, updatedAt: turn.date,
+        observations: record.observations.map((item) => item.id === target.id ? { ...item, refinements: turns } : item),
+      };
+      // Save before the network call so a failure/restart never loses the submitted answer.
+      await persistCase(saved);
+      answerSaved = true;
+      setActiveCase(saved);
+      setCases((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+      setStatus(language === 'ha' ? 'An ajiye amsarka a wannan waya.' : 'Answer saved on this phone.');
+      if (!sendToMeta) return;
+      if (!API_BASE_URL) throw new Error(language === 'ha' ? 'Haɗa sabar domin sabunta shawara.' : 'Connect the Fieldnote server to update advice.');
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 100000);
+      try {
+        const response = await fetch(API_BASE_URL + '/api/refine', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+          body: JSON.stringify({
+            crop: record.crop, image_data_url: await imageAsDataUrl(target), symptoms: target.symptoms,
+            stage: target.stage, location: record.location, previous_assessment: turn.previousAssessment,
+            question, answer, language,
+            history: priorTurns.filter((item) => !!item.assessment).slice(-20).map((item) => ({ question: item.question, answer: item.answer })),
+          }),
+        });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.detail || 'Could not update advice.');
+        const assessment: Assessment = body.assessment;
+        if (!assessment || typeof assessment.visual_observations !== 'string' || typeof assessment.follow_up_question !== 'string'
+            || typeof assessment.urgency !== 'string' || !Array.isArray(assessment.next_steps) || !Array.isArray(assessment.possible_causes)) {
+          throw new Error('The server returned incomplete advice. Your saved answer can be retried.');
+        }
+        const updated: CropCase = { ...saved, updatedAt: new Date().toISOString(),
+          observations: saved.observations.map((item) => item.id === target.id ? {
+            ...item, assessment, refinements: turns.map((item) => item.id === turn.id ? { ...item, assessment } : item),
+          } : item),
+        };
+        await persistCase(updated);
+        setActiveCase(updated);
+        setCases((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
+        setRefineAnswer('');
+        setStatus(language === 'ha' ? 'An sabunta shawara kuma an ajiye ta.' : 'Advice updated and saved with your answer.');
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (error) {
+      const detail = error instanceof Error && error.name !== 'AbortError' ? error.message : 'The request timed out. Try again when connected.';
+      setStatus((answerSaved
+        ? (language === 'ha' ? 'Amsarka da shawarar baya suna nan a waya. ' : 'Your answer and previous advice are saved. Retry Update advice when connected. ')
+        : (language === 'ha' ? 'Ba a ajiye amsar ba. ' : 'Could not save the answer; the text remains here. ')) + detail);
+    } finally {
+      refineSubmitting.current = false;
       setBusy(false);
     }
   }
@@ -356,139 +838,214 @@ export default function App() {
 
   return (
     <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <StatusBar barStyle="dark-content" backgroundColor="#f5f7f2" />
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <StatusBar barStyle="dark-content" />
+      <ScrollView ref={scroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.header}>
-          <View>
-            <Text style={styles.brand}>{t.title}</Text>
-            <Text style={styles.subtitle}>{t.subtitle}</Text>
-          </View>
-          <View style={styles.languageSwitch} accessibilityLabel={t.chooseLanguage}>
-            {(['en', 'ha'] as const).map((code) => (
-              <Pressable key={code} onPress={() => setLanguage(code)} style={[styles.languageButton, language === code && styles.languageSelected]}>
-                <Text style={[styles.languageText, language === code && styles.languageTextSelected]}>{code.toUpperCase()}</Text>
-              </Pressable>
-            ))}
+          <View style={styles.brandRow}><Text style={styles.brandMark}>f</Text><Text style={styles.brand}>fieldnote</Text></View>
+          <View style={styles.languageSwitch} accessibilityLabel={w.chooseLanguage}>
+            {(['en', 'ha'] as const).map((code) => <Pressable key={code} accessibilityRole="button" accessibilityState={{ selected: language === code, disabled: locked }} disabled={locked} onPress={() => { setLanguage(code); setVoiceState('idle'); setVoiceMessage(''); }} style={[styles.languageButton, language === code && styles.languageSelected]}><Text style={[styles.languageText, language === code && styles.languageTextSelected]}>{code.toUpperCase()}</Text></Pressable>)}
           </View>
         </View>
-
-        <View style={styles.hero}>
-          <Text style={styles.heroTitle}>{t.intro}</Text>
-          <Text style={styles.offlineBadge}>●  ON-DEVICE CASEBOOK</Text>
+        <Text style={styles.prototype}>●  {w.prototype}</Text>
+        {__DEV__ && <Text style={styles.hint}>Fieldnote · {APP_REVISION}</Text>}
+        <View style={styles.intro}>
+          <Text style={styles.eyebrow}>—  {w.eyebrow}</Text>
+          <Text style={styles.headline}>{language === 'en' ? 'Notice a change.' : 'Ka lura da canji.'}{'\n'}<Text style={styles.headlineAccent}>{language === 'en' ? 'Know what to do next.' : 'Ka san mataki na gaba.'}</Text></Text>
+          <Text style={styles.introCopy}>{w.intro}</Text>
+          <View style={styles.story}><Text style={styles.storyIcon}>✳</Text><Text style={styles.storyText}>{w.story}</Text></View>
+          <Text style={styles.model}>●  {w.model}</Text>
         </View>
 
         <View style={styles.card}>
-          {activeCase ? (
-            <View style={styles.activeBanner}>
-              <Text style={styles.activeLabel}>{t.active} {activeCase.crop}</Text>
-              <Pressable onPress={startNewCase}><Text style={styles.link}>{t.newCase} +</Text></Pressable>
+          <View style={styles.cardHeading}><View style={styles.flex}><Text style={styles.eyebrow}>{activeCase ? w.followMode : w.startMode}</Text><Text style={styles.sectionTitle}>{w.formTitle}</Text></View><Text style={styles.stepNumber}>01</Text></View>
+          {activeCase && <Text style={styles.activeBanner}>{w.activeCase(language === 'ha' ? cropNames.ha[activeCase.crop] || activeCase.crop : activeCase.crop, activeCase.observations.length)}</Text>}
+          <View style={styles.fieldLabel}><Text style={styles.label}>{w.cropLabel}</Text><Text style={styles.optional}>{w.required}</Text></View>
+          <Dropdown label={w.cropLabel} value={cropChoice} disabled={locked || !!activeCase} closeLabel={language === 'ha' ? 'Rufe' : 'Close'} options={[{ value: '', label: w.selectCrop }, ...CROPS.map((value) => ({ value, label: value === 'Other' ? w.otherCrop : language === 'ha' ? cropNames.ha[value] || value : value }))]} onChange={(value) => { setCropChoice(value); setCrop(value === 'Other' ? '' : value); }} />
+          {cropChoice === 'Other' && <TextInput accessibilityLabel={w.otherCrop} editable={!locked && !activeCase} value={crop} onChangeText={setCrop} placeholder={w.otherCropPlaceholder} placeholderTextColor="#929d93" style={[styles.input, styles.otherCrop]} maxLength={80} />}
+
+          <View style={styles.fieldLabel}><Text style={styles.label}>{w.photoLabel}</Text><Text style={styles.optional}>{w.required}</Text></View>
+          <View style={styles.photoCard}>
+            <Text style={styles.uploadIcon}>＋</Text><Text style={styles.uploadTitle}>{photo?.name || (activeCase ? w.newFollowup : w.choosePhoto)}</Text>
+            <Text style={styles.hint}>{language === 'ha' ? 'Ana shirya hoto a wannan waya · JPEG' : 'Prepared on this phone · JPEG · up to 8 MB'}</Text>
+            <View style={styles.row}>
+              <Pressable accessibilityRole="button" disabled={locked} style={[styles.secondaryButton, locked && styles.disabled]} onPress={() => choosePhoto(true)}><Text style={styles.secondaryText}>{t.camera}</Text></Pressable>
+              <Pressable accessibilityRole="button" disabled={locked} style={[styles.secondaryButton, locked && styles.disabled]} onPress={() => choosePhoto(false)}><Text style={styles.secondaryText}>{t.gallery}</Text></Pressable>
             </View>
-          ) : <Text style={styles.sectionTitle}>{t.newCase}</Text>}
-
-          <Text style={styles.label}>{t.crop}</Text>
-          <TextInput value={crop} onChangeText={setCrop} placeholder={t.cropHint} style={styles.input} maxLength={80} />
-          <Text style={styles.label}>{t.location}</Text>
-          <TextInput value={location} onChangeText={setLocation} placeholder="e.g. Makurdi, Benue" style={styles.input} maxLength={100} />
-          <Text style={styles.label}>{t.stage}</Text>
-          <TextInput value={stage} onChangeText={setStage} placeholder="e.g. flowering" style={styles.input} maxLength={80} />
-
-          <Text style={styles.label}>{t.photo}</Text>
-          <View style={styles.row}>
-            <Pressable style={styles.secondaryButton} onPress={() => choosePhoto(true)}><Text style={styles.secondaryText}>{t.camera}</Text></Pressable>
-            <Pressable style={styles.secondaryButton} onPress={() => choosePhoto(false)}><Text style={styles.secondaryText}>{t.gallery}</Text></Pressable>
+            {photoBusy && <ActivityIndicator color="#214e37" accessibilityLabel={language === 'ha' ? 'Ana shirya hoto' : 'Preparing photo'} />}
+            {photo && <Image accessibilityLabel={language === 'ha' ? 'Hoton shukar da aka zaɓa' : 'Selected crop photo preview'} source={{ uri: photo.uri }} style={styles.preview} resizeMode="contain" onError={({ nativeEvent }) => Alert.alert('Photo unavailable', `[${APP_REVISION}] Preview JPEG (Image): ${nativeEvent.error}`)} />}
           </View>
-          {photo && <Image source={{ uri: photo.uri }} style={styles.preview} resizeMode="cover" />}
 
-          <Text style={styles.label}>{t.notes}</Text>
-          <TextInput value={symptoms} onChangeText={setSymptoms} placeholder={t.notesHint} style={[styles.input, styles.notes]} multiline maxLength={1200} textAlignVertical="top" />
-
-          <Pressable disabled={busy} onPress={() => saveFieldNote(false)} style={[styles.primaryButton, busy && styles.disabled]}>
-            {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{t.save}</Text>}
+          <View style={styles.fieldLabel}><Text style={styles.label}>{w.symptomsLabel}</Text><Text style={styles.optional}>{w.required}</Text></View>
+          <Pressable accessibilityRole="button" accessibilityState={{ disabled: language === 'ha' || busy || photoBusy || voiceState === 'permission' || voiceState === 'transcribing' }} disabled={language === 'ha' || busy || photoBusy || voiceState === 'permission' || voiceState === 'transcribing'} onPress={requestVoice} style={[styles.voiceButton, voiceState === 'recording' && styles.recording, language === 'ha' && styles.disabled]}>
+            {(voiceState === 'permission' || voiceState === 'transcribing') && <ActivityIndicator size="small" color="#42664a" />}
+            <Text style={styles.voiceText}>{language === 'ha' ? w.voiceButtonHausa : voiceState === 'recording' ? '●  Stop recording · ' + seconds + '/30s' : voiceState === 'transcribing' ? w.voiceTranscribing : voiceState === 'permission' ? 'Microphone permission…' : '●  ' + w.voiceButton}</Text>
           </Pressable>
-          <Pressable disabled={busy} onPress={() => saveFieldNote(true)} style={[styles.outlineButton, busy && styles.disabled]}>
-            <Text style={styles.outlineText}>{t.saveAnalyze}</Text>
-          </Pressable>
-          <Text style={styles.disclaimer}>{t.disclaimer}</Text>
-          {!!status && <Text style={styles.status}>{status}</Text>}
+          <Text accessibilityLiveRegion="polite" style={[styles.voiceStatus, voiceState === 'error' && styles.errorText, voiceState === 'success' && styles.successText]}>{language === 'ha' ? w.voiceHausaOff : voiceMessage || w.voiceHint}</Text>
+          {!!voiceDiagnostics && language === 'en' && <Text style={styles.hint}>{voiceDiagnostics}</Text>}
+          <TextInput accessibilityLabel={w.symptomsLabel} editable={!busy && !photoBusy} value={symptoms} onChangeText={setSymptoms} placeholder={activeCase ? (language === 'ha' ? 'Me ya canza tun ziyarar baya? Rubuta sabbin alamu ko abin da kuka gwada…' : 'What has changed since the last visit? Note new signs, spread, or anything you tried…') : w.symptomsPlaceholder} placeholderTextColor="#929d93" style={[styles.input, styles.notes]} multiline maxLength={1200} textAlignVertical="top" />
+          <View style={styles.fieldFooter}><Text style={[styles.hint, styles.flex]}>{w.fieldHint}</Text><Text style={styles.hint}>{symptoms.length} / 1200</Text></View>
+          <View style={styles.fieldLabel}><Text style={styles.label}>{w.stageLabel}</Text><Text style={styles.optional}>{w.optional}</Text></View>
+          <Dropdown label={w.stageLabel} value={stage} disabled={locked} closeLabel={language === 'ha' ? 'Rufe' : 'Close'} options={[{ value: '', label: w.selectStage }, ...STAGES.map((value, index) => ({ value, label: language === 'ha' ? HA_STAGES[index] : value }))]} onChange={setStage} />
+          <View style={styles.fieldLabel}><Text style={styles.label}>{w.locationLabel}</Text><Text style={styles.optional}>{w.optional}</Text></View>
+          <TextInput accessibilityLabel={w.locationLabel} editable={!locked} value={location} onChangeText={setLocation} placeholder={w.locationPlaceholder} placeholderTextColor="#929d93" style={styles.input} maxLength={100} />
+          <View style={styles.privacy}><Text style={styles.privacyIcon}>◎</Text><Text style={styles.privacyText}>{language === 'ha' ? 'Ana adana rahotanni da hotuna a wannan waya. Ana aika hoto ga Meta idan ka nemi shawara; rikodin Turanci yana zuwa ga Meta idan ka zaɓi mayar da shi rubutu. Sabar ba ta adana su.' : 'Cases and photos stay on this phone. Review sends photos to Meta; recording and transcribing sends English audio to Meta. The server does not save them.'}</Text></View>
+          <Pressable accessibilityRole="button" disabled={locked} onPress={() => saveFieldNote(true)} style={[styles.primaryButton, locked && styles.disabled]}><Text style={styles.primaryText}>{activeCase ? w.comparing : language === 'ha' ? 'Duba wannan shuka' : 'Review this plant'}</Text>{busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryArrow}>↗</Text>}</Pressable>
+          <Pressable accessibilityRole="button" disabled={locked} onPress={() => saveFieldNote(false)} style={[styles.outlineButton, locked && styles.disabled]}><Text style={styles.outlineText}>{language === 'ha' ? 'Ajiye bayanin gona ba tare da intanet ba' : 'Save field note offline'}</Text></Pressable>
+          <Text style={styles.disclaimer}>{w.disclaimer}</Text>
         </View>
 
-        {latestAssessment && (
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>{t.assessment}</Text>
-            <Text style={styles.body}>{latestAssessment.visual_observations}</Text>
-            <Text style={styles.label}>{t.possible}</Text>
-            <Text style={styles.body}>{latestAssessment.possible_causes.map((item) => `${item.name} (${item.likelihood})`).join(' · ') || '—'}</Text>
-            <Text style={styles.label}>{t.next}</Text>
-            {latestAssessment.next_steps.map((step, index) => <Text key={index} style={styles.body}>• {step}</Text>)}
-            <Text style={styles.label}>{t.escalate}</Text>
-            <Text style={styles.body}>{latestAssessment.urgency || latestAssessment.escalation}</Text>
-          </View>
-        )}
+        <View style={[styles.card, styles.resultCard]}>
+          <View style={styles.cardHeading}><View style={styles.flex}><Text style={styles.eyebrow}>{w.resultLabel}</Text><Text style={styles.sectionTitle}>{w.resultTitle}</Text></View><Text style={styles.resultIcon}>↳</Text></View>
+          {busy && <View style={styles.loading}><ActivityIndicator color="#214e37" /><View style={styles.flex}><Text style={styles.label}>{w.loadingTitle}</Text><Text style={styles.muted}>{w.loadingCopy}</Text></View></View>}
+          {!!status && <Text accessibilityLiveRegion="polite" style={styles.status}>{status}</Text>}
+          {!latestAssessment && !busy && <View style={styles.emptyState}><Text style={styles.leaf}>❧</Text><Text style={styles.emptyText}>{activeCase ? t.offline : w.empty}</Text></View>}
+          {latestAssessment && <>
+            <Text style={styles.resultHeading}>{resultObservation?.refinements?.some((turn) => !!turn.assessment) ? (language === 'ha' ? 'Shawarar da aka sabunta' : 'Updated advice') : activeCase && activeCase.observations.findIndex((visit) => visit.id === resultObservation?.id) > 0 ? w.change : w.observation}</Text><Text style={styles.body}>{latestAssessment.visual_observations}</Text>
+            <Text style={styles.resultHeading}>{w.causes}</Text>
+            {latestAssessment.possible_causes.length === 0 && <Text style={styles.body}>{w.noCauses}</Text>}
+            {latestAssessment.possible_causes.map((item, index) => <View key={index} style={styles.finding}><View style={styles.findingHeading}><Text style={[styles.caseTitle, styles.flex]}>{item.name}</Text><Text style={styles.badge}>{item.likelihood === 'low' ? w.low : item.likelihood === 'moderate' ? w.moderate : item.likelihood === 'high' ? w.high : item.likelihood}</Text></View>{!!item.evidence && <Text style={styles.body}>{item.evidence}</Text>}{!!item.what_to_check && <Text style={styles.body}>{w.checks} {item.what_to_check}</Text>}</View>)}
+            <Text style={styles.resultHeading}>{w.next}</Text>{latestAssessment.next_steps.map((step, index) => <Text key={index} style={styles.body}>{index + 1}. {step}</Text>)}
+            <Text style={styles.resultHeading}>{w.urgency}</Text><Text style={styles.body}>{latestAssessment.urgency || latestAssessment.escalation}</Text>
+            {!!latestAssessment.follow_up_question && <View style={styles.followQuestion}>
+              <Text style={styles.label}>{w.followQuestion}</Text><Text style={styles.body}>{latestAssessment.follow_up_question}</Text>
+              <TextInput accessibilityLabel={language === 'ha' ? 'Amsarka' : 'Your answer'} value={refineAnswer} onChangeText={setRefineAnswer} editable={!busy}
+                placeholder={language === 'ha' ? 'Rubuta amsarka a nan…' : 'Type your answer here…'} placeholderTextColor="#929d93" style={[styles.input, styles.notes]} multiline maxLength={1200} textAlignVertical="top" />
+              <Text style={styles.hint}>{refineAnswer.length} / 1200</Text>
+              <Text style={styles.voiceStatus}>{language === 'ha' ? 'Ba a tabbatar da gane muryar Hausa ba. Ka rubuta amsarka.' : 'Type your answer. Voice answers are not enabled until transcription is verified.'}</Text>
+              <Text style={styles.privacyText}>{language === 'ha' ? 'Sabunta shawara yana aika hoton wannan ziyara, bayaninka da amsarka ga Meta. Wannan ba sabuwar ziyara ba ce.' : 'Update advice sends this saved visit’s photo, context, previous advice, and answer to Meta. It does not create a new visit.'}</Text>
+              <Pressable accessibilityRole="button" disabled={locked || !refineAnswer.trim()} onPress={() => updateAdvice(true)} style={[styles.primaryButton, (locked || !refineAnswer.trim()) && styles.disabled]}><Text style={styles.primaryText}>{language === 'ha' ? 'Sabunta shawara' : 'Update advice'}</Text><Text style={styles.primaryArrow}>↗</Text></Pressable>
+              <Pressable accessibilityRole="button" disabled={locked || !refineAnswer.trim()} onPress={() => updateAdvice(false)} style={[styles.outlineButton, (locked || !refineAnswer.trim()) && styles.disabled]}><Text style={styles.outlineText}>{language === 'ha' ? 'Ajiye amsa ba tare da intanet ba' : 'Save answer offline'}</Text></Pressable>
+            </View>}
+            {!!resultObservation?.refinements?.length && <View style={styles.followQuestion}>
+              <Text style={styles.resultHeading}>{language === 'ha' ? 'Tambayoyi da amsoshi' : 'Questions and answers'}</Text>
+              {resultObservation.refinements.map((turn) => <View key={turn.id}>
+                <Text style={styles.visitDate}>{new Date(turn.date).toLocaleString()}</Text>
+                <Text style={styles.label}>{turn.question}</Text><Text style={styles.body}>{turn.answer}</Text>
+                <Text style={styles.muted}>{turn.assessment ? turn.assessment.visual_observations : (language === 'ha' ? 'An ajiye amsa; ana jiran sabunta shawara.' : 'Answer saved; advice update pending.')}</Text>
+                {turn.assessment?.next_steps.map((step, index) => <Text key={index} style={styles.body}>• {step}</Text>)}
+              </View>)}
+            </View>}
+            <Text style={styles.disclaimer}>{w.disclaimerResult}</Text>
+          </>}
+          <Text style={styles.resultFoot}>f   {w.resultFoot}</Text>
+        </View>
 
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>{t.casebook} ({cases.length})</Text>
-          {cases.length === 0 && <Text style={styles.muted}>{t.noCases}</Text>}
-          {cases.map((record) => {
-            const latest = record.observations.at(-1);
-            return (
-              <View key={record.id} style={styles.caseItem}>
-                <Pressable onPress={() => continueCase(record)} style={styles.caseMain}>
-                  <Text style={styles.caseTitle}>{record.crop}{record.location ? ` · ${record.location}` : ''}</Text>
-                  <Text style={styles.muted}>{record.observations.length} {t.visits} · {new Date(record.updatedAt).toLocaleDateString()}</Text>
-                  <Text numberOfLines={2} style={styles.caseNote}>{latest?.symptoms}</Text>
-                </Pressable>
-                {latest?.assessment && <Pressable onPress={() => shareCaseWithWorker(record)} style={styles.reviewButton}><Text style={styles.reviewText}>{t.share}</Text></Pressable>}
-                {latest && !latest.assessment && <Pressable onPress={() => requestReview(record, latest.id)} style={styles.reviewButton}><Text style={styles.reviewText}>{t.review}</Text></Pressable>}
+        <View style={styles.casebook}>
+          <Text style={styles.eyebrow}>{w.casebookLabel}</Text><Text style={styles.casebookTitle}>{w.casebookTitle}</Text><Text style={styles.muted}>{w.casebookCopy}</Text>
+          <Pressable accessibilityRole="button" disabled={locked} onPress={startNewCase} style={[styles.newCase, locked && styles.disabled]}><Text style={styles.outlineText}>＋  {w.newCase}</Text></Pressable>
+          {cases.length === 0 && <Text style={styles.emptyCasebook}>{w.casebookEmpty}</Text>}
+          {cases.map((record) => <View key={record.id} style={styles.card}>
+            <Text style={styles.caseTitle}>{language === 'ha' ? cropNames.ha[record.crop] || record.crop : record.crop}{record.location ? ' · ' + record.location : ''}</Text>
+            <Text style={styles.muted}>{record.observations.length} {w.visits} · {w.updated} {new Date(record.updatedAt).toLocaleDateString()}</Text>
+            {record.observations.map((visit, index) => <View key={visit.id} style={styles.visit}>
+              <Image source={{ uri: visit.photoUri }} style={styles.thumbnail} accessibilityLabel={w.visit + ' ' + (index + 1)} />
+              <View style={styles.flex}><Text style={styles.visitDate}>{w.visit} {index + 1} · {new Date(visit.date).toLocaleDateString()}</Text><Text style={styles.body}>{visit.symptoms}</Text>
+                {visit.assessment && <><Text style={styles.muted}>{visit.assessment.visual_observations}</Text><Pressable accessibilityRole="button" disabled={locked} onPress={() => continueCase(record, visit.id)} style={[styles.reviewButton, locked && styles.disabled]}><Text style={styles.reviewText}>{language === 'ha' ? 'Duba shawara / amsa tambaya' : 'View advice / answer question'}</Text></Pressable></>}
+                {!visit.assessment && <Pressable accessibilityRole="button" disabled={locked} onPress={() => { continueCase(record); void requestReview(record, visit.id); }} style={[styles.reviewButton, locked && styles.disabled]}><Text style={styles.reviewText}>{w.submit}</Text></Pressable>}
               </View>
-            );
-          })}
+            </View>)}
+            <Pressable accessibilityRole="button" disabled={locked} onPress={() => continueCase(record)} style={[styles.outlineButton, locked && styles.disabled]}><Text style={styles.outlineText}>{w.addFollowup} ↗</Text></Pressable>
+            <Pressable accessibilityRole="button" disabled={locked} onPress={() => shareCaseWithWorker(record)} style={[styles.reviewButton, locked && styles.disabled]}><Text style={styles.reviewText}>{w.share}</Text></Pressable>
+          </View>)}
         </View>
-        <Text style={styles.footer}>FIELDNOTE · BUILT FOR FARMERS, WITH FARMERS</Text>
+        <View style={styles.footer}><Text style={styles.footerBrand}>FIELDNOTE</Text><Text style={styles.hint}>{w.footer}</Text></View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f5f7f2' },
-  content: { padding: 18, paddingTop: 22, paddingBottom: 40, maxWidth: 720, width: '100%', alignSelf: 'center' },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
-  brand: { color: '#183c2b', fontSize: 27, fontWeight: '800', letterSpacing: -0.6 },
-  subtitle: { color: '#637166', fontSize: 12, marginTop: 2 },
-  languageSwitch: { flexDirection: 'row', backgroundColor: '#e7ece5', borderRadius: 20, padding: 3 },
-  languageButton: { paddingVertical: 7, paddingHorizontal: 10, borderRadius: 18 },
-  languageSelected: { backgroundColor: '#183c2b' },
-  languageText: { fontSize: 11, color: '#48584d', fontWeight: '700' },
+  screen: { flex: 1, backgroundColor: '#fafbf7' },
+  content: { paddingHorizontal: 18, paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight || 24 : 24, paddingBottom: 28, maxWidth: 720, width: '100%', alignSelf: 'center' },
+  flex: { flex: 1 },
+  header: { minHeight: 66, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: '#e9ece6' },
+  brandRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  brand: { fontFamily: 'sans-serif', fontWeight: '800', fontSize: 22, letterSpacing: -0.8, color: '#1e2e25' },
+  brandMark: { width: 30, height: 30, borderRadius: 9, backgroundColor: '#214e37', color: '#fff', textAlign: 'center', fontFamily: 'serif', fontStyle: 'italic', fontWeight: '700', fontSize: 23 },
+  languageSwitch: { flexDirection: 'row', borderRadius: 20, padding: 3, backgroundColor: '#e9f1e8' },
+  languageButton: { minWidth: 44, minHeight: 44, justifyContent: 'center', alignItems: 'center', borderRadius: 18 },
+  languageSelected: { backgroundColor: '#214e37' },
+  languageText: { fontSize: 11, fontWeight: '700', color: '#42664a' },
   languageTextSelected: { color: '#fff' },
-  hero: { backgroundColor: '#183c2b', borderRadius: 18, padding: 20, marginBottom: 14 },
-  heroTitle: { fontSize: 19, color: '#fff', lineHeight: 27, fontWeight: '600' },
-  offlineBadge: { color: '#c5e2c3', fontSize: 10, fontWeight: '700', letterSpacing: 0.8, marginTop: 16 },
-  card: { backgroundColor: '#fff', borderRadius: 16, padding: 17, marginBottom: 14, borderWidth: 1, borderColor: '#e6ebe5' },
-  sectionTitle: { color: '#183c2b', fontSize: 18, fontWeight: '700', marginBottom: 12 },
-  activeBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 13 },
-  activeLabel: { color: '#405649', fontWeight: '600', flex: 1, paddingRight: 8 },
-  link: { color: '#256844', fontWeight: '700', fontSize: 12 },
-  label: { color: '#435247', fontSize: 12, fontWeight: '700', marginTop: 10, marginBottom: 6 },
-  input: { minHeight: 46, borderColor: '#dce4dc', borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, color: '#202b23', fontSize: 14, backgroundColor: '#fff' },
-  notes: { minHeight: 96, paddingTop: 12 },
-  row: { flexDirection: 'row', gap: 9 },
-  secondaryButton: { flex: 1, minHeight: 42, justifyContent: 'center', alignItems: 'center', borderRadius: 10, backgroundColor: '#edf2ec' },
-  secondaryText: { color: '#234d34', fontSize: 13, fontWeight: '700' },
-  preview: { width: '100%', height: 190, marginTop: 10, borderRadius: 10, backgroundColor: '#e7ece5' },
-  primaryButton: { minHeight: 48, justifyContent: 'center', alignItems: 'center', borderRadius: 11, marginTop: 15, backgroundColor: '#183c2b' },
-  primaryText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  outlineButton: { minHeight: 44, justifyContent: 'center', alignItems: 'center', borderRadius: 11, marginTop: 8, borderColor: '#b7c7b9', borderWidth: 1 },
-  outlineText: { color: '#234d34', fontSize: 13, fontWeight: '700' },
-  disabled: { opacity: 0.55 },
-  disclaimer: { color: '#718075', fontSize: 11, lineHeight: 16, marginTop: 10 },
-  status: { color: '#315a3f', fontSize: 12, lineHeight: 18, marginTop: 10, fontWeight: '600' },
-  body: { color: '#334137', fontSize: 13, lineHeight: 19, marginBottom: 4 },
-  caseItem: { borderTopColor: '#e7ece7', borderTopWidth: 1, paddingTop: 12, marginTop: 8 },
-  caseMain: { paddingBottom: 4 },
-  caseTitle: { color: '#1f3828', fontSize: 14, fontWeight: '700' },
-  caseNote: { color: '#59675d', fontSize: 12, marginTop: 4, lineHeight: 17 },
-  muted: { color: '#718075', fontSize: 12, lineHeight: 17 },
-  reviewButton: { alignSelf: 'flex-start', paddingVertical: 7, paddingHorizontal: 10, backgroundColor: '#edf2ec', borderRadius: 8, marginTop: 5 },
-  reviewText: { color: '#234d34', fontSize: 11, fontWeight: '700' },
-  footer: { color: '#8a968b', fontSize: 10, textAlign: 'center', letterSpacing: 1, paddingVertical: 10 },
+  prototype: { fontSize: 11, color: '#647167', marginTop: 12 },
+  intro: { paddingTop: 34, paddingBottom: 32 },
+  eyebrow: { fontSize: 10, lineHeight: 16, fontWeight: '700', letterSpacing: 1.5, color: '#617467', marginBottom: 8 },
+  headline: { fontFamily: 'sans-serif', fontSize: 40, lineHeight: 45, letterSpacing: -2.3, color: '#1e2e25', fontWeight: '700', marginTop: 10, marginBottom: 17 },
+  headlineAccent: { color: '#59775d', fontWeight: '500' },
+  introCopy: { fontSize: 16, lineHeight: 27, color: '#56645a', marginBottom: 22 },
+  story: { flexDirection: 'row', gap: 11, borderLeftWidth: 2, borderLeftColor: '#b8c9b7', paddingLeft: 13, paddingVertical: 9 },
+  storyIcon: { color: '#c27445', fontSize: 18 },
+  storyText: { flex: 1, fontSize: 12, lineHeight: 19, color: '#69776b' },
+  model: { fontSize: 10, lineHeight: 16, fontWeight: '600', letterSpacing: 0.3, color: '#65756a', marginTop: 17 },
+  card: { padding: 23, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e4e9e1', borderRadius: 18, marginBottom: 20, shadowColor: '#203928', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.05, shadowRadius: 18, elevation: 1 },
+  cardHeading: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 10 },
+  sectionTitle: { fontSize: 21, lineHeight: 28, letterSpacing: -0.6, fontWeight: '700', color: '#1e2e25' },
+  stepNumber: { width: 30, height: 30, textAlign: 'center', textAlignVertical: 'center', borderRadius: 15, borderWidth: 1, borderColor: '#dfe5dc', fontSize: 11, color: '#9ca89d' },
+  activeBanner: { marginTop: 8, borderLeftWidth: 2, borderLeftColor: '#b8c9b7', paddingLeft: 10, color: '#59775d', fontSize: 12, lineHeight: 18 },
+  fieldLabel: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginTop: 22, marginBottom: 9 },
+  label: { fontSize: 12, lineHeight: 18, fontWeight: '700', color: '#1e2e25', flexShrink: 1 },
+  optional: { fontSize: 10, color: '#94a096', flexShrink: 1 },
+  input: { minHeight: 46, borderColor: '#dce3da', borderWidth: 1, borderRadius: 9, backgroundColor: '#fff', paddingHorizontal: 13, paddingVertical: 12, color: '#1e2e25', fontSize: 13, lineHeight: 20 },
+  select: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  selectText: { flex: 1, fontSize: 13, color: '#1e2e25' },
+  selectArrow: { color: '#69766d', fontSize: 17 },
+  placeholder: { color: '#929d93' },
+  otherCrop: { marginTop: 8 },
+  photoCard: { borderWidth: 1, borderStyle: 'dashed', borderColor: '#b8c8b8', backgroundColor: '#fbfcf9', borderRadius: 11, padding: 14, alignItems: 'center', gap: 8 },
+  uploadIcon: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#e8f0e7', color: '#426a4a', textAlign: 'center', fontSize: 21 },
+  uploadTitle: { fontSize: 12, fontWeight: '700', color: '#1e2e25', textAlign: 'center' },
+  hint: { fontSize: 10, lineHeight: 15, color: '#88958b' },
+  row: { flexDirection: 'row', width: '100%', gap: 9, marginTop: 6 },
+  secondaryButton: { flex: 1, minHeight: 44, padding: 8, justifyContent: 'center', alignItems: 'center', borderRadius: 9, backgroundColor: '#e9f1e8' },
+  secondaryText: { fontSize: 12, fontWeight: '700', color: '#42664a', textAlign: 'center' },
+  preview: { width: '100%', height: 180, borderRadius: 7, marginTop: 4 },
+  voiceButton: { alignSelf: 'flex-start', flexDirection: 'row', gap: 7, alignItems: 'center', minHeight: 44, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 22, borderWidth: 1, borderColor: '#d6e2d2', backgroundColor: '#f7faf5', marginBottom: 8 },
+  voiceText: { color: '#42664a', fontSize: 11, fontWeight: '600', flexShrink: 1 },
+  recording: { backgroundColor: '#fff3ef', borderColor: '#edc6b8' },
+  voiceStatus: { fontSize: 11, lineHeight: 16, color: '#839087', marginBottom: 8 },
+  errorText: { color: '#a64d35' },
+  successText: { color: '#214e37' },
+  notes: { minHeight: 112 },
+  fieldFooter: { flexDirection: 'row', justifyContent: 'space-between', gap: 10, marginTop: 7 },
+  privacy: { flexDirection: 'row', gap: 8, backgroundColor: '#f5f8f2', borderRadius: 8, padding: 11, marginTop: 21, marginBottom: 15 },
+  privacyIcon: { fontSize: 16, color: '#638366' },
+  privacyText: { flex: 1, fontSize: 10, lineHeight: 16, color: '#718075' },
+  primaryButton: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, borderRadius: 9, paddingHorizontal: 16, paddingVertical: 14, backgroundColor: '#214e37' },
+  primaryText: { color: '#fff', fontSize: 12, lineHeight: 18, fontWeight: '700', flex: 1 },
+  primaryArrow: { fontSize: 19, color: '#fff' },
+  outlineButton: { minHeight: 44, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#d6e2d2', borderRadius: 9, padding: 11, marginTop: 10 },
+  outlineText: { fontSize: 12, lineHeight: 18, fontWeight: '700', color: '#42664a', textAlign: 'center' },
+  disabled: { opacity: 0.5 },
+  disclaimer: { fontSize: 10, lineHeight: 16, color: '#939e94', textAlign: 'center', marginTop: 12 },
+  resultCard: { minHeight: 330 },
+  resultIcon: { width: 30, height: 30, borderRadius: 9, backgroundColor: '#edf3ea', color: '#55765a', textAlign: 'center', fontSize: 22 },
+  resultHeading: { fontWeight: '700', fontSize: 13, color: '#384a3d', marginTop: 20, marginBottom: 7 },
+  body: { fontSize: 12, lineHeight: 20, color: '#607065', marginBottom: 5 },
+  loading: { flexDirection: 'row', gap: 13, alignItems: 'center', paddingVertical: 24 },
+  status: { padding: 12, backgroundColor: '#f5f8f2', borderRadius: 8, color: '#42664a', fontSize: 12, lineHeight: 19, marginVertical: 10 },
+  emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  leaf: { fontSize: 70, color: '#b9ceb7' },
+  emptyText: { fontSize: 12, lineHeight: 21, color: '#849087', textAlign: 'center' },
+  finding: { borderWidth: 1, borderColor: '#dfe9dc', backgroundColor: '#f7faf5', borderRadius: 10, padding: 13, marginTop: 10 },
+  findingHeading: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  badge: { fontSize: 10, color: '#536d55', backgroundColor: '#e8f0e6', borderRadius: 12, paddingVertical: 5, paddingHorizontal: 8, maxWidth: '45%' },
+  followQuestion: { borderLeftWidth: 2, borderLeftColor: '#c77a51', padding: 11, backgroundColor: '#fff8f4', marginTop: 14 },
+  resultFoot: { borderTopWidth: 1, borderTopColor: '#edf0eb', paddingTop: 13, marginTop: 22, fontSize: 8, lineHeight: 14, letterSpacing: 1, color: '#98a298' },
+  casebook: { marginTop: 34 },
+  casebookTitle: { fontSize: 27, lineHeight: 34, letterSpacing: -1, fontWeight: '700', color: '#1e2e25', marginBottom: 8 },
+  muted: { fontSize: 12, lineHeight: 19, color: '#738075' },
+  newCase: { alignSelf: 'flex-start', borderWidth: 1, borderColor: '#d6e2d2', borderRadius: 9, backgroundColor: '#fff', padding: 12, marginVertical: 19 },
+  emptyCasebook: { borderWidth: 1, borderStyle: 'dashed', borderColor: '#dfe5dc', borderRadius: 12, padding: 22, color: '#849087', fontSize: 12, lineHeight: 20 },
+  caseTitle: { color: '#304637', fontSize: 15, lineHeight: 21, fontWeight: '700', marginBottom: 5 },
+  visit: { flexDirection: 'row', gap: 12, borderTopWidth: 1, borderTopColor: '#e7ece7', paddingTop: 14, marginTop: 14 },
+  thumbnail: { width: 54, height: 62, borderRadius: 7, backgroundColor: '#e9f1e8' },
+  visitDate: { fontSize: 10, color: '#738075', marginBottom: 5 },
+  reviewButton: { alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center', paddingHorizontal: 10, paddingVertical: 8, marginTop: 8, borderRadius: 8, backgroundColor: '#edf3ea' },
+  reviewText: { fontSize: 11, fontWeight: '700', color: '#42664a' },
+  footer: { borderTopWidth: 1, borderTopColor: '#e8ece5', paddingTop: 18, marginTop: 30, gap: 8 },
+  footerBrand: { fontSize: 10, letterSpacing: 1, color: '#8a968c' },
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(30,46,37,0.4)', justifyContent: 'center', padding: 24 },
+  modalCard: { maxHeight: '80%', borderRadius: 18, padding: 20, backgroundColor: '#fafbf7' },
+  option: { minHeight: 48, padding: 12, borderBottomWidth: 1, borderBottomColor: '#e4e9e1' },
+  optionSelected: { backgroundColor: '#e9f1e8' },
 });

@@ -2,7 +2,7 @@
   "name": "fieldnote-android",
   "version": "0.1.0",
   "private": true,
-  "main": "expo/AppEntry",
+  "main": "./index.ts",
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
@@ -15,7 +15,8 @@
     "expo-image-picker": "~58.0.10",
     "expo-sqlite": "~58.0.14",
     "react": "19.3.0",
-    "react-native": "0.88.0"
+    "react-native": "0.88.0",
+    "expo-audio": "~58.0.10"
   },
   "devDependencies": {
     "@types/react": "~19.3.0",

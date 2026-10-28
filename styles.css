@@ -12,3 +12,18 @@
 body.printing-case #print-report{display:block}
 .topbar-right{display:flex;align-items:center;gap:16px}.language-switch{display:flex;align-items:center;gap:3px;background:#edf2eb;padding:3px;border-radius:8px}.language-switch button{border:0;background:transparent;border-radius:6px;padding:6px 8px;color:#6e7b70;font:700 9px 'DM Sans',sans-serif;cursor:pointer}.language-switch button[aria-pressed="true"]{background:#fff;color:#31533b;box-shadow:0 1px 4px rgba(25,48,32,.12)}
 @media(max-width:420px){.topbar-right{gap:8px}.prototype-label{font-size:10px}}
+
+/* Web clarification conversation: separate from dated photo visits. */
+.clarification-panel{border-top:1px solid var(--line);margin-top:16px;padding-top:16px;font-size:12px;color:var(--ink)}
+.clarification-panel[hidden]{display:none}.clarification-panel h3{font:700 13px Manrope,sans-serif;margin:16px 0 10px}
+.clarification-visit,.clarification-history time{font-size:10px;color:var(--muted)}
+.clarification-history{padding-left:20px;margin:12px 0 20px}.clarification-history li{padding:0 0 16px 8px;border-left:2px solid #dfe9dc}
+.clarification-question{font-size:12px;line-height:1.7;color:#384a3d;white-space:pre-wrap;overflow-wrap:anywhere}
+.clarification-answer{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f8f2;border-radius:8px;padding:10px;line-height:1.7}
+.clarification-history details{font-size:11px;line-height:1.7;color:#607065}.clarification-history summary{cursor:pointer;color:#42664a;font-weight:600}
+.clarification-form{border-left:2px solid #c77a51;background:#fffaf6;padding:14px;border-radius:0 9px 9px 0}
+.clarification-form textarea{min-height:90px}.clarification-form textarea:read-only{background:#f5f8f2}
+.clarification-tools{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px}
+.clarification-tools>span{font-size:10px;color:var(--muted)}.clarification-status{font-size:11px;line-height:1.6;color:#42664a;margin:10px 0 0}
+.clarification-status.is-error{color:#9b4934}.case-actions{flex-wrap:wrap}
+@media(max-width:420px){.clarification-form{padding:11px}.clarification-panel .submit-button{min-height:44px}}

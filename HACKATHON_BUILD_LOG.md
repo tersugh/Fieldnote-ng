@@ -1,5 +1,18 @@
 # Hackathon Build Log
 
+## Android entry and photo diagnostics — 27 October 2026
+
+- Confirmed the exact Downloads checkout and its mobile Expo project. Web-parity UI already exists in the App.tsx resolved by the prior Expo entry; no competing App file was found. The emulator's reported old screen cannot yet be tied to this source or a specific stale-bundle cause.
+- Added explicit local index.ts registration and a development-only android-parity-photo-v2 label to identify the loaded component.
+- Inspected installed Expo 58.0.20, image-picker 58.0.10, image-manipulator 58.0.15, and file-system 58.0.12 exports/types and the Android manipulation implementation. Replaced the opaque manipulateAsync wrapper with the named native object and individually labelled load, resize, render, and JPEG-save steps. Kept a 1600-pixel maximum, quality 0.65, camera/gallery cancellation, preview, and private storage; added step-specific permission/picker/file/preview/copy errors and isolated cleanup failures.
+- No runtime root cause or successful device result claimed. Commands, builds, and emulator execution remain with the user; no secrets or dependency versions changed.
+
+## Android photo-selection fix — 27 October 2026
+
+- Codex identified an invalid package-namespace call to `ImageManipulator.manipulate`: installed `expo-image-manipulator` 58.0.15 exports `manipulateAsync` and a nested `ImageManipulator` object, but no top-level `manipulate` function.
+- Replaced that call with exported `manipulateAsync`, preserving aspect ratio with a maximum 1600-pixel edge, no upscaling, and JPEG compression at 0.65. Camera/gallery permissions, cancellation, preview, and copying into app-private storage on save remain intact.
+- Inspected installed Expo 58.0.20 bundled-module metadata and Android image-manipulator sources for API compatibility. No commands, builds, typechecks, or emulator/device tests were run, as requested; device verification remains pending.
+
 ## Project start — 26 October 2026
 
 **Starting point:** blank project directory created for this event.  
@@ -80,3 +93,24 @@
 - Updated the Muse Spark initial and follow-up prompts to return specific feasible actions, urgency and warning signs, and one focused question when more evidence would improve the recommendation. The model must still communicate uncertainty and must not invent pesticide products, mixtures, or doses.
 - Updated browser and Android-facing copy, the printable artifact, README, Android plan, and Meta workflow to describe a farmer-owned field plan.
 - Expert-quality advice is the product goal, not a validated claim yet. Build out authoritative Nigerian crop guidance, review Hausa with fluent speakers, and test recommendations with farmers before claiming expert-level reliability.
+
+## Android web parity and voice input — 27 October 2026
+
+- Codex adapted the web intro, story, EN/HA copy, cream/green cards, crop and stage choices, results, and dated casebook to one scrollable Android column. Kept SQLite, private photo copies, offline save, review retry, follow-up comparison, and optional extension-worker sharing.
+- Retained the installed-package photo fix: exported manipulateAsync with a maximum 1600-pixel edge and JPEG compression 0.65; added selected filename and prepared-file size validation.
+- Added SDK 58 expo-audio AudioStream recording, explicit transcription consent, permission/recording/transcribing/success/failure states, 30-second limit, interruption cleanup, and native PCM WAV normalization for the existing /api/transcribe contract. Hausa transcription remains disabled.
+- Declared expo-audio ~58.0.10 from installed Expo bundled-module metadata; installation and lockfile update are left to the user. No dependency upgrades, environment edits, commands, builds, emulator runs, or runtime tests performed. Static source inspection only; visual and device verification remain pending.
+
+## WAV validation and answer-and-refine workflow — 27 October 2026
+
+- Codex traced installed Expo native WAV finalization and confirmed the app awaits it before reading. Added finalized-metadata/byte consistency checks and non-silent PCM checks on Android and server, with aggregate-only diagnostics. Preserved Meta multipart WAV delivery. Empty transcript and unsupported response shapes now have distinct accurate errors; silence is rejected before upstream upload. No failing recording was available, so no claim is made that captured audio contains intelligible speech or that live transcription works.
+- Added a dedicated /api/refine route for answers about the same observation, with bounded input validation, original context/photo, prior assessment, Q&A history, English/Hausa text, and the same assessment response structure. /api/followup remains the separate-visit photo comparison route.
+- Added Android answer input, Update advice, offline answer saving, per-visit result selection, and dated persistent Q&A/revision history in existing SQLite JSON records. Pending answers survive failure and can be reopened; voice answers remain disabled until verified.
+- Added focused endpoint and synthetic WAV/multipart tests. No commands, tests, builds, emulator, live API calls, dependency changes, or secret edits performed.
+
+## Web farmer clarification conversation — 28 October 2026
+
+- Added a web answer form and Update advice below the model question, using the existing shared /api/refine contract without changing server or mobile code. Preserved the separate /api/followup photo-visit flow.
+- Added ordered per-visit Q&A history and revised assessments in IndexedDB, serialized draft saves, pending-turn retry, and per-visit casebook reopening. Fixed result lifecycle ordering that hid freshly returned advice and acknowledged writes only after transaction commit.
+- Reused browser voice recording/transcription for editable English answers with destination/session tracking, consent, cancellation, and error handling. Hausa voice remains disabled; typed answers work in both interfaces. Escaped model and farmer text in rendered conversation content.
+- Updated web documentation. No commands, tests, builds, emulator changes, secret access, or dependency changes performed. No web-specific test suite was present; browser behavior remains unverified.

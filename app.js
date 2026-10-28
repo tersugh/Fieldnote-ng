@@ -14,6 +14,7 @@ const emptyState = document.querySelector('#empty-state');
 const loadingState = document.querySelector('#loading-state');
 const errorState = document.querySelector('#error-state');
 const analysisResult = document.querySelector('#analysis-result');
+const clarificationPanel = document.querySelector('#clarification-panel');
 const formMode = document.querySelector('#form-mode');
 const activeCaseLabel = document.querySelector('#active-case-label');
 const casebookList = document.querySelector('#casebook-list');
@@ -23,10 +24,27 @@ const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_RECORDING_SECONDS = 30;
 let activeCaseId = null;
 let activeCaseRecord = null;
+let displayedCase = null;
+let displayedVisit = null;
+let refineBusy = false;
+let visitBusy = false;
+let draftWrites = Promise.resolve();
+let draftSaveError = null;
+let recordingSession = null;
 let language = localStorage.getItem('fieldnote-language') === 'ha' ? 'ha' : 'en';
 
 const copy = {
   en: {
+    answerLabel: 'Your answer', answerPlaceholder: 'Tell us what you observed…', updateAdvice: 'Update advice',
+    updatingAdvice: 'Updating advice…', clarificationHistory: 'Clarification history', openAdvice: 'View advice / answer question',
+    refinePrivacy: 'Updating advice sends this saved visit’s photo, notes, previous advice, and your answer to Meta. It does not add a photo visit.',
+    draftSaved: 'Draft saved on this device.', draftFailed: 'Could not save the draft on this device. Keep this page open and retry.',
+    refineFailed: 'Advice was not updated. Your previous advice and answer are still available; retry when connected.',
+    refineSuccess: 'Advice updated and conversation saved.', answerRequired: 'Type an answer first.',
+    invalidAdvice: 'The service returned incomplete advice. Your previous advice and answer are unchanged.',
+    voiceTooLong: 'The transcript would exceed 1,200 characters. Your existing text is unchanged; record a shorter answer.',
+    voiceConsent: 'Record in English for up to 30 seconds? Stopping sends the audio to Meta for transcription. You can edit the transcript before updating advice.',
+    savedRevision: 'Advice after this answer', pendingAnswer: 'Saved answer — update pending',
     prototype: 'Hackathon prototype', eyebrow: 'CROP INCIDENT FOLLOW-UP', headline: 'Notice a change.<br /><em>Know what to do next.</em>',
     intro: 'Share a crop photo and field notes to get practical recommendations directly. Return with dated updates to see what changed and decide what to do next.',
     story: 'Born from a family story about soybean losses—and built to put timely, understandable crop advice directly in farmers’ hands.',
@@ -61,7 +79,16 @@ const copy = {
     areaNoLocation: 'Location not added', errorCrop: 'Choose a crop or enter its name.',
   },
   ha: {
-    prototype: 'Samfurin gwajin hackathon', eyebrow: 'BINCIKEN RAHOTON MATSALAR GONA', headline: 'Ka lura da canji.<br /><em>Ka san mataki na gaba.</em>',
+    answerLabel: 'Amsarka', answerPlaceholder: 'Rubuta abin da ka lura da shi…', updateAdvice: 'Sabunta shawara',
+    updatingAdvice: 'Ana sabunta shawara…', clarificationHistory: 'Tarihin tambayoyi da amsoshi', openAdvice: 'Duba shawara / amsa tambaya',
+    refinePrivacy: 'Sabunta shawara yana aika hoton wannan ziyara, bayanai, shawarar baya da amsarka ga Meta. Ba sabuwar ziyara ba ce.',
+    draftSaved: 'An ajiye amsar a wannan na’ura.', draftFailed: 'Ba a iya ajiye amsar ba. Ka bar shafin a buɗe ka sake gwadawa.',
+    refineFailed: 'Ba a sabunta shawara ba. Shawarar baya da amsarka suna nan; ka sake gwadawa idan akwai intanet.',
+    refineSuccess: 'An sabunta shawara kuma an ajiye tarihin tattaunawa.', answerRequired: 'Rubuta amsarka da farko.',
+    invalidAdvice: 'Ba a samu cikakkiyar shawara ba. Shawarar baya da amsarka suna nan.',
+    voiceTooLong: 'Rubutun muryar zai wuce haruffa 1,200. Ka yi gajeren rikodi; rubutunka yana nan.',
+    voiceConsent: 'Yi rikodin Turanci na daƙiƙa 30? Dakatarwa tana aika sautin ga Meta domin rubutu. Za ka iya gyara rubutun kafin sabunta shawara.',
+    savedRevision: 'Shawara bayan wannan amsa', pendingAnswer: 'An ajiye amsa — ana jiran sabuntawa',    prototype: 'Samfurin gwajin hackathon', eyebrow: 'BINCIKEN RAHOTON MATSALAR GONA', headline: 'Ka lura da canji.<br /><em>Ka san mataki na gaba.</em>',
     intro: 'Aika hoton amfanin gona da bayanin gona domin samun shawarwari masu amfani kai tsaye. Ka dawo da sabon bayani mai kwanan wata domin ganin canji da sanin mataki na gaba.',
     story: 'An samo ra’ayin ne daga labarin asarar waken soya a gonar kakata. An gina Fieldnote domin kai shawarar noma mai sauƙin fahimta kai tsaye ga manoma.',
     model: 'Meta Muse Spark · shawarwarin noma da bibiyar canji', formMode: 'SABON RAHOTON GONA', formTitle: 'Me ka lura da shi?',
@@ -140,77 +167,113 @@ function applyLanguage(nextLanguage) {
     const cropName=language==='ha'?(cropNames.ha[activeCaseRecord.crop]||activeCaseRecord.crop):activeCaseRecord.crop;
     activeCaseLabel.textContent=copy[language].activeCase(cropName,activeCaseRecord.observations.length);
   }
+  if (displayedCase) renderSavedAdvice();
   renderCasebook();
 }
 
-document.querySelectorAll('[data-language]').forEach((button)=>button.addEventListener('click',()=>{
-  if(button.dataset.language==='ha' && recorder?.state==='recording') recorder.stop();
+document.querySelectorAll('[data-language]').forEach((button) => button.addEventListener('click', () => {
+  if (refineBusy || visitBusy) return;
+  cancelRecording();
   applyLanguage(button.dataset.language);
 }));
 applyLanguage(language);
-let recorder;
-let recordingStream;
-let recordingChunks = [];
-let recordingTimer;
 
 symptoms.addEventListener('input', () => { charCount.textContent = `${symptoms.value.length} / 1200`; });
 
-  voiceButton.addEventListener('click', async () => {
-  if (recorder?.state === 'recording') {
-    recorder.stop();
+// One recording/transcription pipeline, with an explicit destination field per session.
+voiceButton.addEventListener('click', () => startRecording(symptoms, voiceButton, voiceStatus));
+window.addEventListener('pagehide', cancelRecording);
+
+function cancelRecording() {
+  const session = recordingSession;
+  if (!session) return;
+  recordingSession = null;
+  session.cancelled = true;
+  clearTimeout(session.timer);
+  session.controller?.abort();
+  if (session.recorder?.state === 'recording') session.recorder.stop();
+  session.stream?.getTracks().forEach((track) => track.stop());
+  session.button.classList.remove('recording');
+  session.button.disabled = language === 'ha';
+  session.button.setAttribute('aria-pressed', 'false');
+  session.button.querySelector('span:last-child').textContent = tr('voiceButton');
+}
+
+async function startRecording(field, button, status) {
+  if (language === 'ha' || refineBusy || visitBusy) return;
+  if (recordingSession) {
+    if (recordingSession.button === button && recordingSession.recorder?.state === 'recording') recordingSession.recorder.stop();
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-    voiceStatus.textContent = tr('voiceUnsupported');
+    status.textContent = tr('voiceUnsupported');
     return;
   }
+  if (!window.confirm(tr('voiceConsent'))) return;
+  const session = { field, button, status, chunks: [], cancelled: false, language };
+  recordingSession = session;
+  button.disabled = true;
   try {
-    recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    recordingChunks = [];
-    recorder = new MediaRecorder(recordingStream);
-    recorder.addEventListener('dataavailable', (event) => { if (event.data.size) recordingChunks.push(event.data); });
-    recorder.addEventListener('stop', finishRecording, { once: true });
-    recorder.start();
-    voiceButton.classList.add('recording');
-    voiceButton.setAttribute('aria-pressed', 'true');
-    voiceButton.querySelector('#voice-button-copy').textContent = tr('voiceRecording');
-    voiceStatus.textContent = language === 'ha' ? 'Ana rikodi…' : `Recording… ${MAX_RECORDING_SECONDS} seconds maximum.`;
-    recordingTimer = window.setTimeout(() => { if (recorder?.state === 'recording') recorder.stop(); }, MAX_RECORDING_SECONDS * 1000);
+    session.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (session.cancelled) { session.stream.getTracks().forEach((track) => track.stop()); return; }
+    session.recorder = new MediaRecorder(session.stream);
+    session.recorder.addEventListener('dataavailable', (event) => { if (event.data.size) session.chunks.push(event.data); });
+    session.recorder.addEventListener('stop', () => finishRecording(session), { once: true });
+    session.recorder.addEventListener('error', () => { cancelRecording(); status.textContent = tr('voiceFailed'); });
+    session.recorder.start();
+    button.disabled = false;
+    button.classList.add('recording');
+    button.setAttribute('aria-pressed', 'true');
+    button.querySelector('span:last-child').textContent = tr('voiceRecording');
+    status.textContent = 'Recording in English… 30 seconds maximum.';
+    session.timer = setTimeout(() => { if (session.recorder.state === 'recording') session.recorder.stop(); }, MAX_RECORDING_SECONDS * 1000);
   } catch {
-    voiceStatus.textContent = tr('voiceDenied');
+    if (!session.cancelled) status.textContent = tr('voiceDenied');
+    if (recordingSession === session) cancelRecording();
   }
-});
+}
 
-async function finishRecording() {
-  window.clearTimeout(recordingTimer);
-  recordingStream?.getTracks().forEach((track) => track.stop());
-  recordingStream = null;
-  voiceButton.classList.remove('recording');
-  if(language==='ha') { voiceButton.setAttribute('aria-pressed','false'); voiceStatus.textContent=tr('voiceHausaOff'); return; }
-  voiceButton.disabled = true;
-  voiceButton.setAttribute('aria-pressed', 'false');
-  voiceButton.querySelector('#voice-button-copy').textContent = tr('voiceTranscribing');
-  voiceStatus.textContent = tr('voiceConverting');
+async function finishRecording(session) {
+  clearTimeout(session.timer);
+  session.stream?.getTracks().forEach((track) => track.stop());
+  if (session.cancelled) return;
+  const { field, button, status } = session;
+  button.classList.remove('recording');
+  button.disabled = true;
+  button.setAttribute('aria-pressed', 'false');
+  button.querySelector('span:last-child').textContent = tr('voiceTranscribing');
+  status.textContent = tr('voiceConverting');
+  session.controller = new AbortController();
+  const timeout = setTimeout(() => session.controller.abort(), 70000);
   try {
-    const blob = new Blob(recordingChunks, { type: recorder.mimeType || 'audio/webm' });
+    const blob = new Blob(session.chunks, { type: session.recorder.mimeType || 'audio/webm' });
     const wav = await convertToWav(blob);
+    if (session.cancelled) return;
     const audioDataUrl = await readAsDataUrl(wav);
+    if (session.cancelled) return;
     const response = await fetch('/api/transcribe', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio_data_url: audioDataUrl }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: session.controller.signal,
+      body: JSON.stringify({ audio_data_url: audioDataUrl, language: 'en' }),
     });
     const body = await response.json();
-    if (!response.ok) throw new Error(body.detail || 'Voice transcription failed. Please try again.');
-    const priorText = symptoms.value.trim();
-    symptoms.value = priorText ? `${priorText} ${body.transcript}` : body.transcript;
-    symptoms.dispatchEvent(new Event('input'));
-    symptoms.focus();
-    voiceStatus.textContent = tr('voiceReview');
+    if (session.cancelled || !field.isConnected || language !== session.language) return;
+    if (!response.ok) throw new Error(body.detail || tr('voiceFailed'));
+    if (typeof body.transcript !== 'string' || !body.transcript.trim()) throw new Error(tr('voiceFailed'));
+    const combined = [field.value.trim(), body.transcript.trim()].filter(Boolean).join(' ');
+    if (combined.length > 1200) throw new Error(tr('voiceTooLong'));
+    field.value = combined;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.focus();
+    status.textContent = tr('voiceReview');
   } catch (error) {
-    voiceStatus.textContent = localizeError(error.message) || tr('voiceFailed');
+    if (!session.cancelled) status.textContent = error.name === 'AbortError' ? tr('voiceFailed') : localizeError(error.message) || tr('voiceFailed');
   } finally {
-    voiceButton.disabled = false;
-    voiceButton.querySelector('#voice-button-copy').textContent = language === 'ha' ? tr('voiceButtonHausa') : tr('voiceButton');
+    clearTimeout(timeout);
+    if (recordingSession === session) recordingSession = null;
+    if (!session.cancelled) {
+      button.disabled = language === 'ha';
+      button.querySelector('span:last-child').textContent = language === 'ha' ? tr('voiceButtonHausa') : tr('voiceButton');
+    }
   }
 }
 
@@ -221,7 +284,7 @@ async function convertToWav(blob) {
     const decoded = await context.decodeAudioData(await blob.arrayBuffer());
     const sourceRate = decoded.sampleRate;
     const targetRate = 24000;
-    const outputLength = Math.ceil(decoded.length * targetRate / sourceRate);
+    const outputLength = Math.min(targetRate * MAX_RECORDING_SECONDS, Math.floor(decoded.length * targetRate / sourceRate));
     const channels = Array.from({ length: decoded.numberOfChannels }, (_, index) => decoded.getChannelData(index));
     const pcm = new Int16Array(outputLength);
     for (let i = 0; i < outputLength; i += 1) {
@@ -256,6 +319,7 @@ cropSelect.addEventListener('change', () => {
 });
 
 photoInput.addEventListener('change', () => {
+  if (refineBusy || visitBusy) return;
   const file = photoInput.files?.[0];
   if (!file) return;
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > MAX_BYTES) {
@@ -275,6 +339,7 @@ document.querySelector('#drop-zone').addEventListener('dragover', (event) => { e
 document.querySelector('#drop-zone').addEventListener('dragleave', (event) => { event.currentTarget.classList.remove('dragover'); });
 document.querySelector('#drop-zone').addEventListener('drop', (event) => {
   event.preventDefault(); event.currentTarget.classList.remove('dragover');
+  if (refineBusy || visitBusy) return;
   const file = event.dataTransfer.files?.[0];
   if (!file) return;
   const transfer = new DataTransfer(); transfer.items.add(file); photoInput.files = transfer.files;
@@ -283,6 +348,10 @@ document.querySelector('#drop-zone').addEventListener('drop', (event) => {
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (refineBusy || visitBusy) return;
+  cancelRecording();
+  await draftWrites;
+  if (draftSaveError) return;
   const file = photoInput.files?.[0];
   if (!file || !symptoms.value.trim() || !cropSelect.value) return;
   if (file.size > MAX_BYTES) return showError('This photo is larger than 8 MB. Choose a smaller image.');
@@ -318,15 +387,15 @@ form.addEventListener('submit', async (event) => {
     });
     const body = await response.json();
     if (!response.ok) throw new Error(body.detail || 'The assessment could not be completed. Please try again.');
-    const observation = { date: new Date().toISOString(), stage, symptoms: currentNote, photo: file, assessment: body.assessment };
+    const observation = { date: new Date().toISOString(), stage, location, symptoms: currentNote, photo: file, assessment: body.assessment };
     const savedCase = priorCase
       ? { ...priorCase, updatedAt: observation.date, observations: [...priorCase.observations, observation] }
       : { id: crypto.randomUUID(), crop, location, createdAt: observation.date, updatedAt: observation.date, observations: [observation] };
     await putCase(savedCase);
-    renderAssessment(body.assessment, Boolean(priorCase));
     await renderCasebook();
     clearPhotoInput();
     activateCase(savedCase);
+    showSavedAdvice(savedCase, savedCase.observations.length - 1);
   } catch (error) {
     showError(error.message || (language==='ha'?'Ba a iya tantance rahoton ba. Duba intanet ka sake gwadawa.':'Could not reach the analysis service. Check your connection and try again.'));
   } finally { setLoading(false); }
@@ -335,11 +404,18 @@ form.addEventListener('submit', async (event) => {
 newCaseButton.addEventListener('click', startNewCase);
 casebookList.addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-action]');
-  if (!button) return;
+  if (!button || refineBusy || visitBusy) return;
+  cancelRecording();
+  await draftWrites;
+  if (draftSaveError) return;
   const record = await getCase(button.dataset.caseId);
   if (!record) return;
-  if (button.dataset.action === 'continue') {
+  if (button.dataset.action === 'advice') {
+    showSavedAdvice(record, Number(button.dataset.visitIndex));
+    document.querySelector('#result-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else if (button.dataset.action === 'continue') {
     activateCase(record);
+    clearPhotoInput();
     form.scrollIntoView({ behavior: 'smooth', block: 'start' });
   } else if (button.dataset.action === 'print') {
     await printFarmPlan(record);
@@ -367,9 +443,11 @@ async function caseStoreRequest(method, value) {
     const transaction = db.transaction('cases', method === 'get' || method === 'getAll' ? 'readonly' : 'readwrite');
     const store = transaction.objectStore('cases');
     const request = method === 'getAll' ? store.getAll() : store[method](value);
-    request.onsuccess = () => resolve(request.result);
+    let result;
+    request.onsuccess = () => { result = request.result; };
     request.onerror = () => reject(new Error('The local casebook could not be read or saved.'));
-    transaction.oncomplete = () => db.close();
+    transaction.oncomplete = () => { db.close(); resolve(result); };
+    transaction.onabort = () => { db.close(); reject(new Error('The local casebook save was aborted.')); };
     transaction.onerror = () => { db.close(); reject(new Error('The local casebook could not be updated.')); };
   });
 }
@@ -386,8 +464,10 @@ async function renderCasebook() {
       const latest = record.observations[record.observations.length - 1];
       const excerpt = latest.symptoms.length > 115 ? `${latest.symptoms.slice(0, 112)}…` : latest.symptoms;
       const cropName = language==='ha'?(cropNames.ha[record.crop]||record.crop):record.crop;
+      const adviceActions = record.observations.map((visit, index) => visit.assessment
+        ? `<button type="button" data-action="advice" data-case-id="${escapeHtml(record.id)}" data-visit-index="${index}">${escapeHtml(tr('openAdvice'))} · ${index + 1}</button>` : '').join('');
       const shareAction = latest.assessment ? `<button type="button" data-action="share" data-case-id="${escapeHtml(record.id)}">${tr('share')}</button>` : '';
-      return `<article class="case-card"><div class="case-card-top"><div><span class="case-crop">${escapeHtml(cropName)}</span><span class="case-location">${record.location ? escapeHtml(record.location) : tr('noLocation')}</span></div><span class="case-count">${record.observations.length} ${record.observations.length === 1 ? tr('visit') : tr('visits')}</span></div><p class="case-excerpt">${escapeHtml(excerpt)}</p><div class="case-card-foot"><span>${tr('updated')} ${escapeHtml(formatDate(record.updatedAt))}</span><div class="case-actions">${shareAction}<button type="button" data-action="print" data-case-id="${escapeHtml(record.id)}">${tr('print')}</button><button type="button" class="case-continue" data-action="continue" data-case-id="${escapeHtml(record.id)}">${tr('addFollowup')} ↗</button></div></div></article>`;
+      return `<article class="case-card"><div class="case-card-top"><div><span class="case-crop">${escapeHtml(cropName)}</span><span class="case-location">${record.location ? escapeHtml(record.location) : tr('noLocation')}</span></div><span class="case-count">${record.observations.length} ${record.observations.length === 1 ? tr('visit') : tr('visits')}</span></div><p class="case-excerpt">${escapeHtml(excerpt)}</p><div class="case-card-foot"><span>${tr('updated')} ${escapeHtml(formatDate(record.updatedAt))}</span><div class="case-actions">${adviceActions}${shareAction}<button type="button" data-action="print" data-case-id="${escapeHtml(record.id)}">${tr('print')}</button><button type="button" class="case-continue" data-action="continue" data-case-id="${escapeHtml(record.id)}">${tr('addFollowup')} ↗</button></div></div></article>`;
     }).join('');
   } catch (error) {
     casebookList.innerHTML = `<p class="casebook-empty">${escapeHtml(error.message)}</p>`;
@@ -463,7 +543,11 @@ function clearPhotoInput() {
   uploadMain.textContent = tr('newFollowup');
   uploadHint.textContent = tr('photoHint');
 }
-function startNewCase() {
+async function startNewCase() {
+  if (refineBusy || visitBusy) return;
+  cancelRecording();
+  await draftWrites;
+  if (draftSaveError) return;
   activeCaseId = null;
   activeCaseRecord = null;
   form.reset();
@@ -491,8 +575,20 @@ async function printFarmPlan(record) {
   document.body.classList.remove('printing-case');
   printReport.innerHTML = '';
 }
-function setLoading(isLoading) { submitButton.disabled = isLoading; document.getElementById('submit-copy').textContent = isLoading ? (activeCaseId ? tr('followLoading') : tr('firstLoading')) : (activeCaseId ? tr('comparing') : tr('submit')); emptyState.hidden = isLoading; errorState.hidden = true; analysisResult.hidden = true; loadingState.hidden = !isLoading; }
-function clearResult() { errorState.hidden = true; analysisResult.hidden = true; emptyState.hidden = false; }
+function setLoading(isLoading) {
+  visitBusy = isLoading;
+  submitButton.disabled = isLoading;
+  document.getElementById('submit-copy').textContent = isLoading ? (activeCaseId ? tr('followLoading') : tr('firstLoading')) : (activeCaseId ? tr('comparing') : tr('submit'));
+  loadingState.hidden = !isLoading;
+  if (isLoading) { emptyState.hidden = true; errorState.hidden = true; analysisResult.hidden = true; clarificationPanel.hidden = true; }
+}
+function clearResult() {
+  cancelRecording();
+  displayedCase = null;
+  displayedVisit = null;
+  clarificationPanel.hidden = true;
+  errorState.hidden = true; analysisResult.hidden = true; emptyState.hidden = false;
+}
 function localizeError(message) {
   if(language!=='ha') return message;
   if(message.includes('MODEL_API_KEY is not set')) return 'Ba a saka MODEL_API_KEY a muhallin sabar ba tukuna.';
@@ -510,6 +606,161 @@ function list(items) { if (!Array.isArray(items) || !items.length) return `<p>${
 function escapeHtml(value) { return value.replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
 function renderAssessment(a, isFollowup = false) {
   const causes = Array.isArray(a.possible_causes) ? a.possible_causes : [];
-  analysisResult.innerHTML = `<h3>${isFollowup?tr('change'):tr('observation')}</h3><p>${escapeHtml(safeText(a.visual_observations))}</p><h3>${tr('causes')}</h3>${causes.length ? causes.map((cause) => {const level=({low:tr('low'),moderate:tr('moderate'),high:tr('high')})[String(cause.likelihood||'').toLowerCase()]||tr('uncertain');return `<article class="finding"><div class="finding-head"><strong>${escapeHtml(safeText(cause.name))}</strong><span class="badge">${escapeHtml(level)} ${tr('likelihood')}</span></div><p>${escapeHtml(safeText(cause.evidence))}</p>${cause.what_to_check ? `<p><b>${tr('checks')}</b> ${escapeHtml(safeText(cause.what_to_check))}</p>` : ''}</article>`;}).join('') : `<p>${tr('noCauses')}</p>`}<h3>${tr('next')}</h3>${list(a.next_steps)}<h3>${tr('urgency')}</h3><p>${escapeHtml(safeText(a.urgency || a.escalation))}</p>${a.follow_up_question ? `<div class="followup"><b>${tr('followQuestion')}</b> ${escapeHtml(safeText(a.follow_up_question))}</div>` : ''}<p class="disclaimer">${tr('disclaimerResult')}</p>`;
+  analysisResult.innerHTML = `<h3>${isFollowup?tr('change'):tr('observation')}</h3><p>${escapeHtml(safeText(a.visual_observations))}</p><h3>${tr('causes')}</h3>${causes.length ? causes.map((cause) => {const level=({low:tr('low'),moderate:tr('moderate'),high:tr('high')})[String(cause.likelihood||'').toLowerCase()]||tr('uncertain');return `<article class="finding"><div class="finding-head"><strong>${escapeHtml(safeText(cause.name))}</strong><span class="badge">${escapeHtml(level)} ${tr('likelihood')}</span></div><p>${escapeHtml(safeText(cause.evidence))}</p>${cause.what_to_check ? `<p><b>${tr('checks')}</b> ${escapeHtml(safeText(cause.what_to_check))}</p>` : ''}</article>`;}).join('') : `<p>${tr('noCauses')}</p>`}<h3>${tr('next')}</h3>${list(a.next_steps)}<h3>${tr('urgency')}</h3><p>${escapeHtml(safeText(a.urgency || a.escalation))}</p><p class="disclaimer">${tr('disclaimerResult')}</p>`;
   loadingState.hidden = true; emptyState.hidden = true; errorState.hidden = true; analysisResult.hidden = false;
+}
+
+
+function showSavedAdvice(record, index) {
+  const visit = record.observations[index];
+  if (!visit?.assessment) return;
+  cancelRecording();
+  displayedCase = record;
+  displayedVisit = index;
+  renderSavedAdvice();
+}
+
+function renderSavedAdvice() {
+  const visit = displayedCase?.observations[displayedVisit];
+  if (!visit?.assessment) return;
+  renderAssessment(visit.assessment, displayedVisit > 0 && !(visit.clarifications || []).some((turn) => turn.assessment));
+  renderClarification();
+}
+
+function renderClarification() {
+  const visit = displayedCase?.observations[displayedVisit];
+  if (!visit) { clarificationPanel.hidden = true; return; }
+  const question = safeText(visit.assessment?.follow_up_question).trim();
+  const turns = visit.clarifications || [];
+  const draft = visit.clarificationDraft?.question === question ? safeText(visit.clarificationDraft.answer) : '';
+  clarificationPanel.innerHTML = `
+    <p class="clarification-visit">${escapeHtml(tr('visit'))} ${displayedVisit + 1} · ${escapeHtml(formatDate(visit.date))}</p>
+    ${turns.length ? `<h3>${escapeHtml(tr('clarificationHistory'))}</h3><ol class="clarification-history">${turns.map((turn) => `<li>
+      <time>${escapeHtml(formatDate(turn.date))}</time><p class="clarification-question">${escapeHtml(safeText(turn.question))}</p>
+      <p class="clarification-answer">${escapeHtml(safeText(turn.answer))}</p>
+      ${turn.assessment ? `<details><summary>${escapeHtml(tr('savedRevision'))}</summary><p>${escapeHtml(safeText(turn.assessment.visual_observations))}</p>${list(turn.assessment.next_steps)}<p>${escapeHtml(safeText(turn.assessment.urgency))}</p></details>` : `<p>${escapeHtml(tr('pendingAnswer'))}</p>`}
+    </li>`).join('')}</ol>` : ''}
+    ${question ? `<form id="clarification-form" class="clarification-form">
+      <p id="clarification-question" class="clarification-question"><b>${escapeHtml(tr('followQuestion'))}</b> ${escapeHtml(question)}</p>
+      <label class="field-label" for="clarification-answer">${escapeHtml(tr('answerLabel'))}</label>
+      <textarea id="clarification-answer" rows="3" maxlength="1200" required aria-describedby="clarification-question clarification-status" placeholder="${escapeHtml(tr('answerPlaceholder'))}">${escapeHtml(safeText(draft))}</textarea>
+      <div class="clarification-tools"><button id="answer-voice" class="voice-button" type="button" aria-pressed="false" ${language === 'ha' ? 'disabled' : ''}><span aria-hidden="true">●</span> <span>${escapeHtml(tr(language === 'ha' ? 'voiceButtonHausa' : 'voiceButton'))}</span></button><span id="answer-count">${draft.length} / 1200</span></div>
+      <p id="answer-voice-status" class="voice-status" role="status">${escapeHtml(tr(language === 'ha' ? 'voiceHausaOff' : 'voiceHint'))}</p>
+      <p class="privacy-note">${escapeHtml(tr('refinePrivacy'))}</p>
+      <button id="update-advice" class="submit-button" type="submit"><span>${escapeHtml(tr('updateAdvice'))}</span><span aria-hidden="true">↗</span></button>
+    </form>` : ''}
+    <p id="clarification-status" class="clarification-status" role="status">${draftSaveError ? escapeHtml(tr('draftFailed')) : ''}</p>`;
+  clarificationPanel.hidden = false;
+  clarificationPanel.setAttribute('aria-label', tr('clarificationHistory'));
+  const field = clarificationPanel.querySelector('#clarification-answer');
+  if (field) {
+    field.addEventListener('input', () => {
+      visit.clarificationDraft = { question, answer: field.value };
+      clarificationPanel.querySelector('#answer-count').textContent = field.value.length + ' / 1200';
+      queueDraftSave(displayedCase.id, displayedVisit, question, field.value);
+    });
+    clarificationPanel.querySelector('#answer-voice').addEventListener('click', () => startRecording(field, clarificationPanel.querySelector('#answer-voice'), clarificationPanel.querySelector('#answer-voice-status')));
+    clarificationPanel.querySelector('#clarification-form').addEventListener('submit', updateAdvice);
+  }
+}
+
+function clarificationStatus(message, failed = false) {
+  const element = clarificationPanel.querySelector('#clarification-status');
+  if (element) { element.textContent = message; element.classList.toggle('is-error', failed); }
+}
+
+function queueDraftSave(caseId, index, question, answer) {
+  // Serialize read-modify-write operations so earlier keystrokes cannot overwrite newer drafts.
+  draftWrites = draftWrites.then(async () => {
+    const record = await getCase(caseId);
+    const visit = record?.observations[index];
+    if (!visit || safeText(visit.assessment?.follow_up_question).trim() !== question) throw new Error(tr('draftFailed'));
+    visit.clarificationDraft = { question, answer };
+    await putCase(record);
+    draftSaveError = null;
+    if (displayedCase?.id === caseId && displayedVisit === index && !refineBusy) clarificationStatus(tr('draftSaved'));
+  }).catch(() => {
+    draftSaveError = true;
+    if (displayedCase?.id === caseId && displayedVisit === index) clarificationStatus(tr('draftFailed'), true);
+  });
+  return draftWrites;
+}
+
+function setRefineBusy(value) {
+  refineBusy = value;
+  submitButton.disabled = value;
+  photoInput.disabled = value;
+  newCaseButton.disabled = value;
+  document.querySelectorAll('[data-language], #casebook-list button').forEach((button) => { button.disabled = value; });
+  const field = clarificationPanel.querySelector('#clarification-answer');
+  if (field) field.readOnly = value;
+  const update = clarificationPanel.querySelector('#update-advice');
+  if (update) { update.disabled = value; update.querySelector('span').textContent = tr(value ? 'updatingAdvice' : 'updateAdvice'); }
+  const voice = clarificationPanel.querySelector('#answer-voice');
+  if (voice) voice.disabled = value || language === 'ha';
+}
+
+function validRevisedAssessment(value) {
+  return value && ['visual_observations', 'urgency', 'follow_up_question'].every((key) => typeof value[key] === 'string')
+    && Array.isArray(value.next_steps) && value.next_steps.every((item) => typeof item === 'string')
+    && Array.isArray(value.possible_causes) && value.possible_causes.every((item) => item && typeof item.name === 'string' && typeof item.likelihood === 'string');
+}
+
+async function updateAdvice(event) {
+  event.preventDefault();
+  if (refineBusy || visitBusy || !displayedCase) return;
+  const field = clarificationPanel.querySelector('#clarification-answer');
+  const answer = field.value.trim();
+  if (!answer) { clarificationStatus(tr('answerRequired'), true); field.focus(); return; }
+  const caseId = displayedCase.id;
+  const index = displayedVisit;
+  const question = safeText(displayedCase.observations[index].assessment.follow_up_question).trim();
+  cancelRecording();
+  setRefineBusy(true);
+  clarificationStatus(tr('updatingAdvice'));
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 100000);
+  try {
+    await queueDraftSave(caseId, index, question, field.value);
+    if (draftSaveError) throw new Error(tr('draftFailed'));
+    const record = await getCase(caseId);
+    const visit = record?.observations[index];
+    if (!visit || safeText(visit.assessment?.follow_up_question).trim() !== question) throw new Error(tr('refineFailed'));
+    const turns = visit.clarifications || [];
+    const pending = turns.find((turn) => !turn.assessment && turn.question === question);
+    const turn = { id: pending?.id || crypto.randomUUID(), date: new Date().toISOString(), question, answer, previousAssessment: visit.assessment };
+    visit.clarifications = [...turns.filter((item) => item.id !== pending?.id), turn];
+    await putCase(record);
+    const response = await fetch('/api/refine', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
+      body: JSON.stringify({
+        image_data_url: await readAsDataUrl(visit.photo), crop: record.crop, symptoms: visit.symptoms,
+        stage: visit.stage || '', location: visit.location ?? record.location ?? '', previous_assessment: visit.assessment,
+        question, answer, language,
+        history: turns.filter((item) => item.assessment).slice(-20).map((item) => ({ question: item.question, answer: item.answer })),
+      }),
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || tr('refineFailed'));
+    if (!validRevisedAssessment(body.assessment)) throw new Error(tr('invalidAdvice'));
+    // Merge into the latest stored case, preserving any other visits added meanwhile.
+    const updated = await getCase(caseId);
+    const currentVisit = updated?.observations[index];
+    if (!currentVisit || !currentVisit.clarifications?.some((item) => item.id === turn.id && !item.assessment)) throw new Error(tr('refineFailed'));
+    currentVisit.assessment = body.assessment;
+    currentVisit.clarifications = currentVisit.clarifications.map((item) => item.id === turn.id ? { ...turn, assessment: body.assessment } : item);
+    delete currentVisit.clarificationDraft;
+    updated.updatedAt = new Date().toISOString();
+    await putCase(updated);
+    if (activeCaseId === updated.id) activeCaseRecord = updated;
+    showSavedAdvice(updated, index);
+    clarificationStatus(tr('refineSuccess'));
+    await renderCasebook();
+  } catch (error) {
+    // Never replace/hide the existing advice or the editable draft on failure.
+    clarificationStatus(tr('refineFailed') + (error.name === 'AbortError' ? '' : ' ' + localizeError(error.message)), true);
+  } finally {
+    clearTimeout(timeout);
+    setRefineBusy(false);
+  }
 }
