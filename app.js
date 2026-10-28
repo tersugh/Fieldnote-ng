@@ -318,8 +318,10 @@ cropSelect.addEventListener('change', () => {
   otherCrop.required = isOther;
 });
 
-photoInput.addEventListener('change', () => {
+photoInput.addEventListener('change', async () => {
   if (refineBusy || visitBusy) return;
+  await draftWrites;
+  if (draftSaveError || refineBusy || visitBusy) return;
   const file = photoInput.files?.[0];
   if (!file) return;
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > MAX_BYTES) {
