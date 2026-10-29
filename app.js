@@ -28,6 +28,7 @@ let displayedCase = null;
 let displayedVisit = null;
 let refineBusy = false;
 let visitBusy = false;
+let savedPreviewUrl = null;
 let draftWrites = Promise.resolve();
 let draftSaveError = null;
 let recordingSession = null;
@@ -130,6 +131,7 @@ const cropNames = {
 function tr(key) { return copy[language][key] ?? copy.en[key] ?? key; }
 function applyLanguage(nextLanguage) {
   language = nextLanguage === 'ha' ? 'ha' : 'en';
+  document.querySelector('#save-local').textContent = language === 'ha' ? 'Ajiye a nan — a tantance daga baya' : 'Save on this device — analyze later';
   localStorage.setItem('fieldnote-language', language);
   document.documentElement.lang = language;
   document.title = language === 'ha' ? 'Fieldnote — Rahoton gonaki' : 'Fieldnote — Crop incident follow-up';
@@ -348,65 +350,135 @@ document.querySelector('#drop-zone').addEventListener('drop', (event) => {
   photoInput.dispatchEvent(new Event('change'));
 });
 
-form.addEventListener('submit', async (event) => {
+form.addEventListener('submit', (event) => {
   event.preventDefault();
-  if (refineBusy || visitBusy) return;
-  cancelRecording();
-  await draftWrites;
-  if (draftSaveError) return;
-  const file = photoInput.files?.[0];
-  if (!file || !symptoms.value.trim() || !cropSelect.value) return;
-  if (file.size > MAX_BYTES) return showError('This photo is larger than 8 MB. Choose a smaller image.');
-  setLoading(true);
-  try {
-    const imageDataUrl = await readAsDataUrl(file);
-    const crop = cropSelect.value === 'Other' ? otherCrop.value.trim() : cropSelect.value;
-    const stage = document.querySelector('#stage').value;
-    const location = document.querySelector('#location').value.trim();
-    const currentNote = symptoms.value.trim();
-    let endpoint = '/api/diagnose';
-    let requestBody = { image_data_url: imageDataUrl, crop, symptoms: currentNote, stage, location, language };
-    let priorCase = null;
-    if (activeCaseId) {
-      priorCase = await getCase(activeCaseId);
-      if (!priorCase?.observations?.length) throw new Error(language==='ha'?'Ba a iya buɗe rahoton baya ba. Ka fara sabon rahoto.':'Could not load the earlier field note. Start a new incident.');
-      const previous = priorCase.observations[priorCase.observations.length - 1];
-      requestBody = {
-        previous_image_data_url: await readAsDataUrl(previous.photo),
-        image_data_url: imageDataUrl,
-        crop,
-        previous_note: previous.symptoms,
-        symptoms: currentNote,
-        stage,
-        location,
-        language,
-      };
-      endpoint = '/api/followup';
-    }
-    const response = await fetch(endpoint, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
-    });
-    const body = await response.json();
-    if (!response.ok) throw new Error(body.detail || 'The assessment could not be completed. Please try again.');
-    const observation = { date: new Date().toISOString(), stage, location, symptoms: currentNote, photo: file, assessment: body.assessment };
-    const savedCase = priorCase
-      ? { ...priorCase, updatedAt: observation.date, observations: [...priorCase.observations, observation] }
-      : { id: crypto.randomUUID(), crop, location, createdAt: observation.date, updatedAt: observation.date, observations: [observation] };
-    await putCase(savedCase);
-    await renderCasebook();
-    clearPhotoInput();
-    activateCase(savedCase);
-    showSavedAdvice(savedCase, savedCase.observations.length - 1);
-  } catch (error) {
-    showError(error.message || (language==='ha'?'Ba a iya tantance rahoton ba. Duba intanet ka sake gwadawa.':'Could not reach the analysis service. Check your connection and try again.'));
-  } finally { setLoading(false); }
+  return saveWebVisit(true);
 });
+document.querySelector('#save-local').addEventListener('click', () => saveWebVisit(false));
+
+async function saveWebVisit(sendNow) {
+  if (refineBusy || visitBusy) return;
+  const file = photoInput.files?.[0];
+  const crop = cropSelect.value === 'Other' ? otherCrop.value.trim() : cropSelect.value;
+  if (!crop || !file || !symptoms.value.trim()) return showError(language === 'ha' ? 'Zaɓi amfanin gona da hoto, sannan rubuta alamun.' : 'Choose a crop and photo, and describe the symptoms.');
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > MAX_BYTES) return showError('Choose a JPG, PNG, or WebP image smaller than 8 MB.');
+  // Claim the operation before the first await; React/DOM updates are not a lock.
+  setLoading(true);
+  cancelRecording();
+  try {
+    await draftWrites;
+    if (draftSaveError) throw new Error(tr('draftFailed'));
+    const prior = activeCaseId ? await getCase(activeCaseId) : null;
+    if (activeCaseId && !prior) throw new Error('The saved case could not be opened.');
+    const now = new Date().toISOString();
+    const visit = { id: crypto.randomUUID(), date: now, photo: file, symptoms: symptoms.value.trim(),
+      stage: document.querySelector('#stage').value, location: document.querySelector('#location').value.trim(),
+      analysis: { state: 'pending', kind: 'saved' } };
+    const record = prior
+      ? { ...prior, updatedAt: now, observations: [...prior.observations, visit] }
+      : { id: crypto.randomUUID(), crop, location: visit.location, createdAt: now, updatedAt: now, observations: [visit] };
+    await putCase(record); // Includes the Blob, committed before any upload.
+    clearPhotoInput();
+    activateCase(record);
+    showSavedAdvice(record, record.observations.length - 1);
+    await renderCasebook();
+    if (sendNow) await analyzeSavedWebVisit(record.id, record.observations.length - 1);
+  } catch (error) {
+    showError(error.message || 'Local save failed. Your form has been kept; check device storage.');
+  } finally { setLoading(false); }
+}
+
+function analysisStatus(visit) {
+  if (visit.assessment) return language === 'ha' ? 'An kammala tantancewa' : 'Analysis complete';
+  if (visit.analysis?.state === 'error') {
+    const prefix = visit.analysis.kind === 'input'
+      ? (language === 'ha' ? 'Bayanan na buƙatar gyara' : 'Input needs correction')
+      : (language === 'ha' ? 'Tantancewa ta gaza' : 'Analysis needs attention');
+    return prefix + (visit.analysis.message ? ': ' + visit.analysis.message : '');
+  }
+  return language === 'ha'
+    ? 'Ana jiran tantancewa. An ajiye hoto da bayanai a nan. Babu aikawa ta atomatik.'
+    : 'Pending analysis. Photo and details saved on this device. Nothing is sent automatically.';
+}
+
+function analysisError(kind, message) {
+  return Object.assign(new Error(message), { analysisKind: kind });
+}
+
+async function fetchSavedAssessment(endpoint, payload) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 100000);
+  try {
+    let response;
+    try {
+      response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload), signal: controller.signal });
+    } catch {
+      throw analysisError('connection', language === 'ha' ? 'Ba a samu amsa ba. Za ka iya sake gwadawa da kanka.' : 'No response received (connection, timeout, or blocked request). Retry when ready.');
+    }
+    let body;
+    try { body = await response.json(); }
+    catch (error) {
+      if (error.name === 'AbortError' || error.name === 'TypeError') throw analysisError('connection', 'The response was interrupted. Your saved note is intact; retry when ready.');
+      throw analysisError('model', 'The service returned an unreadable response. The saved note is intact.');
+    }
+    if (!response.ok) throw analysisError(response.status === 400 || response.status === 422 ? 'input' : 'model',
+      typeof body.detail === 'string' ? body.detail : 'The service could not produce advice.');
+    if (!validRevisedAssessment(body.assessment)) throw analysisError('model', 'The service returned incomplete advice. The saved note is intact.');
+    return body.assessment;
+  } finally { clearTimeout(timeout); }
+}
+
+async function analyzeSavedWebVisit(caseId, index) {
+  const record = await getCase(caseId);
+  const target = record?.observations[index];
+  if (!target || target.assessment) return;
+  loadingState.hidden = false;
+  let result;
+  try {
+    const previous = index > 0 ? record.observations[index - 1] : null;
+    let image, previousImage;
+    try {
+      image = await readAsDataUrl(target.photo);
+      if (previous) previousImage = await readAsDataUrl(previous.photo);
+    } catch { throw analysisError('input', 'The saved photo could not be read. Add a corrected visit with a readable photo.'); }
+    const payload = { image_data_url: image, crop: record.crop, symptoms: target.symptoms, stage: target.stage || '',
+      location: target.location ?? record.location ?? '', language };
+    if (previous) Object.assign(payload, { previous_image_data_url: previousImage, previous_note: previous.symptoms });
+    const assessment = await fetchSavedAssessment(previous ? '/api/followup' : '/api/diagnose', payload);
+    result = { assessment, analysis: { state: 'complete' } };
+  } catch (error) {
+    const kind = error.analysisKind || 'model';
+    result = { analysis: { state: kind === 'connection' ? 'pending' : 'error', kind, message: error.message } };
+  }
+  // Merge into the current record, preserving all other visits and clarification turns.
+  const latest = await getCase(caseId);
+  if (!latest?.observations[index] || latest.observations[index].id !== target.id) throw new Error('The saved visit changed. Reopen it before retrying.');
+  if (!latest.observations[index].assessment) Object.assign(latest.observations[index], result);
+  latest.updatedAt = new Date().toISOString();
+  await putCase(latest);
+  if (activeCaseId === caseId) activeCaseRecord = latest;
+  showSavedAdvice(latest, index);
+  await renderCasebook();
+}
+
+async function retryWebAnalysis(caseId, index) {
+  if (refineBusy || visitBusy) return;
+  setLoading(true);
+  cancelRecording();
+  try {
+    await draftWrites;
+    if (draftSaveError) throw new Error(tr('draftFailed'));
+    await analyzeSavedWebVisit(caseId, index);
+  } catch (error) { showError(error.message || 'The local case could not be updated. Reopen the saved visit.'); }
+  finally { setLoading(false); }
+}
 
 newCaseButton.addEventListener('click', startNewCase);
 casebookList.addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-action]');
   if (!button || refineBusy || visitBusy) return;
+  if (button.dataset.action === 'retry') return retryWebAnalysis(button.dataset.caseId, Number(button.dataset.visitIndex));
   cancelRecording();
   await draftWrites;
   if (draftSaveError) return;
@@ -465,11 +537,14 @@ async function renderCasebook() {
       const latest = record.observations[record.observations.length - 1];
       const excerpt = latest.symptoms.length > 115 ? `${latest.symptoms.slice(0, 112)}…` : latest.symptoms;
       const cropName = language==='ha'?(cropNames.ha[record.crop]||record.crop):record.crop;
-      const adviceActions = record.observations.map((visit, index) => visit.assessment
-        ? `<button type="button" data-action="advice" data-case-id="${escapeHtml(record.id)}" data-visit-index="${index}">${escapeHtml(tr('openAdvice'))} · ${index + 1}</button>` : '').join('');
-      const shareAction = latest.assessment ? `<button type="button" data-action="share" data-case-id="${escapeHtml(record.id)}">${tr('share')}</button>` : '';
+      const adviceActions = record.observations.map((visit, index) =>
+        `<div><span>${index + 1} · ${escapeHtml(analysisStatus(visit))}</span>
+        <button type="button" data-action="advice" data-case-id="${escapeHtml(record.id)}" data-visit-index="${index}">${escapeHtml(visit.assessment ? tr('openAdvice') : (language === 'ha' ? 'Duba bayanan da aka ajiye' : 'View saved details'))}</button>
+        ${!visit.assessment ? `<button type="button" data-action="retry" data-case-id="${escapeHtml(record.id)}" data-visit-index="${index}">${language === 'ha' ? 'Sake neman tantancewa' : 'Retry analysis'}</button>` : ''}</div>`).join('');
+      const shareAction = `<button type="button" data-action="share" data-case-id="${escapeHtml(record.id)}">${tr('share')}</button>`;
       return `<article class="case-card"><div class="case-card-top"><div><span class="case-crop">${escapeHtml(cropName)}</span><span class="case-location">${record.location ? escapeHtml(record.location) : tr('noLocation')}</span></div><span class="case-count">${record.observations.length} ${record.observations.length === 1 ? tr('visit') : tr('visits')}</span></div><p class="case-excerpt">${escapeHtml(excerpt)}</p><div class="case-card-foot"><span>${tr('updated')} ${escapeHtml(formatDate(record.updatedAt))}</span><div class="case-actions">${adviceActions}${shareAction}<button type="button" data-action="print" data-case-id="${escapeHtml(record.id)}">${tr('print')}</button><button type="button" class="case-continue" data-action="continue" data-case-id="${escapeHtml(record.id)}">${tr('addFollowup')} ↗</button></div></div></article>`;
     }).join('');
+    if (visitBusy || refineBusy) casebookList.querySelectorAll('button').forEach(button => { button.disabled = true; });
   } catch (error) {
     casebookList.innerHTML = `<p class="casebook-empty">${escapeHtml(error.message)}</p>`;
   }
@@ -708,12 +783,18 @@ async function printFarmPlan(record) {
 function setLoading(isLoading) {
   visitBusy = isLoading;
   submitButton.disabled = isLoading;
+  document.querySelectorAll('#save-local, #photo, #new-case-button, [data-language], #casebook-list button, #retry-saved, #answer-voice, #update-advice').forEach((button) => { button.disabled = isLoading; });
+  const answer = clarificationPanel.querySelector('#clarification-answer');
+  if (answer) answer.readOnly = isLoading;
+  if (language === 'ha') { const voice = clarificationPanel.querySelector('#answer-voice'); if (voice) voice.disabled = true; }
   document.getElementById('submit-copy').textContent = isLoading ? (activeCaseId ? tr('followLoading') : tr('firstLoading')) : (activeCaseId ? tr('comparing') : tr('submit'));
   loadingState.hidden = !isLoading;
   if (isLoading) { emptyState.hidden = true; errorState.hidden = true; }
 }
 function clearResult() {
   cancelRecording();
+  if (savedPreviewUrl) URL.revokeObjectURL(savedPreviewUrl);
+  savedPreviewUrl = null;
   displayedCase = null;
   displayedVisit = null;
   clarificationPanel.hidden = true;
@@ -743,7 +824,7 @@ function renderAssessment(a, isFollowup = false) {
 
 function showSavedAdvice(record, index, bringIntoView = true) {
   const visit = record.observations[index];
-  if (!visit?.assessment) return;
+  if (!visit) return;
   cancelRecording();
   displayedCase = record;
   displayedVisit = index;
@@ -758,7 +839,23 @@ function showSavedAdvice(record, index, bringIntoView = true) {
 
 function renderSavedAdvice() {
   const visit = displayedCase?.observations[displayedVisit];
-  if (!visit?.assessment) return;
+  if (!visit) return;
+  if (savedPreviewUrl) URL.revokeObjectURL(savedPreviewUrl);
+  savedPreviewUrl = null;
+  if (!visit.assessment) {
+    analysisResult.innerHTML = `<h3>${escapeHtml(analysisStatus(visit))}</h3>
+      ${visit.analysis?.state === 'pending' && visit.analysis.message ? `<p>${escapeHtml(visit.analysis.message)}</p>` : ''}
+      <p>${escapeHtml(displayedCase.crop)} · ${escapeHtml(formatDate(visit.date))}</p>
+      <p>${escapeHtml(visit.stage || '')} ${escapeHtml(visit.location ?? displayedCase.location ?? '')}</p>
+      <p>${escapeHtml(visit.symptoms)}</p><img id="saved-photo" class="preview" alt="">
+      <p>${language === 'ha' ? 'Sake gwadawa zai aika hoton da bayanan da aka ajiye don tantancewa.' : 'Retry sends this saved visit’s photo and details for analysis. A comparison also sends the previous visit’s photo.'}</p>
+      <button type="button" id="retry-saved" class="new-case-button">${language === 'ha' ? 'Sake neman tantancewa' : 'Retry analysis'}</button>`;
+    if (visit.photo) { savedPreviewUrl = URL.createObjectURL(visit.photo); document.querySelector('#saved-photo').src = savedPreviewUrl; }
+    document.querySelector('#retry-saved').onclick = () => retryWebAnalysis(displayedCase.id, displayedVisit);
+    clarificationPanel.hidden = true;
+    emptyState.hidden = true; loadingState.hidden = true; errorState.hidden = true; analysisResult.hidden = false;
+    return;
+  }
   renderAssessment(visit.assessment, displayedVisit > 0 && !(visit.clarifications || []).some((turn) => turn.assessment));
   renderClarification();
 }
@@ -824,6 +921,7 @@ function queueDraftSave(caseId, index, question, answer) {
 
 function setRefineBusy(value) {
   refineBusy = value;
+  document.querySelector('#save-local').disabled = value;
   submitButton.disabled = value;
   photoInput.disabled = value;
   newCaseButton.disabled = value;

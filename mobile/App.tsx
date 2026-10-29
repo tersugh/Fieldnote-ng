@@ -25,6 +25,7 @@ import { File } from 'expo-file-system';
 import { useAudioStream, requestRecordingPermissionsAsync, setAudioModeAsync } from 'expo-audio';
 import { prepareTranscriptionWav } from './voice';
 import { buildCaseSummary, shareCaseSummary } from './caseSharing';
+import { analyzeSavedVisit, analysisStatus, createOperationGate, type AnalysisState } from './analysis';
 
 declare const process: { env: { EXPO_PUBLIC_API_BASE_URL?: string } };
 
@@ -50,6 +51,8 @@ type Observation = {
   id: string;
   date: string;
   stage: string;
+  location?: string;
+  analysis?: AnalysisState;
   symptoms: string;
   photoUri: string;
   mimeType: string;
@@ -245,6 +248,13 @@ async function persistCase(record: CropCase): Promise<void> {
   );
 }
 
+async function loadSavedCase(id: string): Promise<CropCase> {
+  const db = await openDatabase();
+  const row = await db.getFirstAsync<StoredCase>('SELECT record_json FROM cases WHERE id = ?', id);
+  if (!row) throw new Error('The saved case could not be opened.');
+  return JSON.parse(row.record_json) as CropCase;
+}
+
 function newId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -303,6 +313,7 @@ export default function App() {
   const [symptoms, setSymptoms] = useState('');
   const [photo, setPhoto] = useState<PickedPhoto | null>(null);
   const [busy, setBusy] = useState(false);
+  const analysisGate = useMemo(() => createOperationGate(), []);
   const [status, setStatus] = useState('');
   const [selectedObservationId, setSelectedObservationId] = useState<string | null>(null);
   const [refineAnswer, setRefineAnswer] = useState('');
@@ -625,106 +636,61 @@ export default function App() {
     if (locked) return;
     if (!crop.trim()) return Alert.alert(t.cropRequired);
     if (!photo || !symptoms.trim()) return Alert.alert(t.photoRequired);
-    setBusy(true);
-    setStatus('');
-    let record: CropCase;
-    let observation: Observation;
-    try {
-      const now = new Date().toISOString();
-      const observationId = newId();
-      const photoUri = await savePhotoPermanently(photo, observationId);
-      observation = {
-        id: observationId,
-        date: now,
-        stage: stage.trim(),
-        symptoms: symptoms.trim(),
-        photoUri,
-        mimeType: photo.mimeType,
-      };
-      record = activeCase
-        ? { ...activeCase, updatedAt: now, observations: [...activeCase.observations, observation] }
-        : {
-            id: newId(), crop: crop.trim(), location: location.trim(), createdAt: now, updatedAt: now,
-            observations: [observation],
-          };
-      await persistCase(record);
-      setActiveCase(record);
-      setSelectedObservationId(observation.id);
-      setRefineAnswer('');
-      setCases((current) => [record, ...current.filter((item) => item.id !== record.id)]);
-      setSymptoms('');
-      setPhoto(null);
-      setStatus(t.saved);
-      if (requestMetaReview) await requestReview(record, observation.id);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : t.error;
-      setStatus(message || t.error);
-      if (requestMetaReview) Alert.alert(t.error, message);
-    } finally {
-      setBusy(false);
-    }
+    const selectedPhoto = photo;
+    return analysisGate.run(async () => {
+      setBusy(true);
+      setStatus('');
+      try {
+        const now = new Date().toISOString();
+        const observationId = newId();
+        const photoUri = await savePhotoPermanently(selectedPhoto, observationId);
+        const observation: Observation = {
+          id: observationId, date: now, stage: stage.trim(), location: location.trim(),
+          symptoms: symptoms.trim(), photoUri, mimeType: selectedPhoto.mimeType,
+          analysis: { state: 'pending', kind: 'saved' },
+        };
+        const prior = activeCase ? await loadSavedCase(activeCase.id) : null;
+        const record: CropCase = prior
+          ? { ...prior, updatedAt: now, observations: [...prior.observations, observation] }
+          : { id: newId(), crop: crop.trim(), location: location.trim(), createdAt: now, updatedAt: now, observations: [observation] };
+        await persistCase(record);
+        setActiveCase(record);
+        setSelectedObservationId(observation.id);
+        setRefineAnswer('');
+        setCases(current => [record, ...current.filter(item => item.id !== record.id)]);
+        setSymptoms('');
+        setPhoto(null);
+        setStatus(analysisStatus(observation, language));
+        if (requestMetaReview) await reviewSavedVisit(record.id, observation.id);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : t.error);
+      } finally { setBusy(false); }
+    });
+  }
+
+  async function reviewSavedVisit(caseId: string, observationId: string) {
+    setStatus(language === 'ha' ? 'Ana neman tantancewa…' : 'Requesting analysis…');
+    const updated = await analyzeSavedVisit<Observation, CropCase>(caseId, observationId, language, API_BASE_URL, {
+      load: loadSavedCase, save: persistCase, photo: imageAsDataUrl, request: fetch,
+    });
+    setActiveCase(updated);
+    setSelectedObservationId(observationId);
+    const visit = updated.observations.find(item => item.id === observationId);
+    setRefineAnswer(visit?.refinements?.find(turn => !turn.assessment)?.answer || '');
+    setCases(current => [updated, ...current.filter(item => item.id !== updated.id)]);
+    if (visit) setStatus(analysisStatus(visit, language));
   }
 
   async function requestReview(record: CropCase, observationId?: string) {
-    if (voiceActive || photoBusy) return;
-    if (!API_BASE_URL) {
-      setStatus(t.config);
-      return;
-    }
-    const target = observationId
-      ? record.observations.find((item) => item.id === observationId)
-      : record.observations.find((item) => !item.assessment);
-    if (!target) {
-      setStatus(language === 'ha' ? 'An riga an duba wannan ziyara.' : 'This visit already has a review.');
-      return;
-    }
-    const index = record.observations.findIndex((item) => item.id === target.id);
-    const previous = index > 0 ? record.observations[index - 1] : null;
-    try {
+    if (locked) return;
+    const id = observationId || record.observations.find(item => !item.assessment)?.id;
+    if (!id) return;
+    return analysisGate.run(async () => {
       setBusy(true);
-      setStatus(language === 'ha' ? 'Ana haɗawa da Meta…' : 'Connecting to Meta…');
-      const requestBody = previous
-        ? {
-            previous_image_data_url: await imageAsDataUrl(previous),
-            image_data_url: await imageAsDataUrl(target),
-            crop: record.crop,
-            previous_note: previous.symptoms,
-            symptoms: target.symptoms,
-            stage: target.stage,
-            location: record.location,
-            language,
-          }
-        : {
-            image_data_url: await imageAsDataUrl(target),
-            crop: record.crop,
-            symptoms: target.symptoms,
-            stage: target.stage,
-            location: record.location,
-            language,
-          };
-      const response = await fetch(`${API_BASE_URL}${previous ? '/api/followup' : '/api/diagnose'}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-      });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.detail || 'Crop advice could not be generated.');
-      const updated: CropCase = {
-        ...record,
-        observations: record.observations.map((item) => item.id === target.id ? { ...item, assessment: body.assessment } : item),
-      };
-      await persistCase(updated);
-      setActiveCase(updated);
-      setSelectedObservationId(target.id);
-      setRefineAnswer('');
-      setCases((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
-      setStatus(t.reviewed);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : t.offline;
-      setStatus(`${t.offline} ${message}`);
-    } finally {
-      setBusy(false);
-    }
+      try { await reviewSavedVisit(record.id, id); }
+      catch (error) { setStatus(error instanceof Error ? error.message : t.error); }
+      finally { setBusy(false); }
+    });
   }
 
   async function updateAdvice(sendToMeta: boolean) {
@@ -929,7 +895,13 @@ export default function App() {
               <Image source={{ uri: visit.photoUri }} style={styles.thumbnail} accessibilityLabel={w.visit + ' ' + (index + 1)} />
               <View style={styles.flex}><Text style={styles.visitDate}>{w.visit} {index + 1} · {new Date(visit.date).toLocaleDateString()}</Text><Text style={styles.body}>{visit.symptoms}</Text>
                 {visit.assessment && <><Text style={styles.muted}>{visit.assessment.visual_observations}</Text><Pressable accessibilityRole="button" disabled={locked} onPress={() => continueCase(record, visit.id)} style={[styles.reviewButton, locked && styles.disabled]}><Text style={styles.reviewText}>{language === 'ha' ? 'Duba shawara / amsa tambaya' : 'View advice / answer question'}</Text></Pressable></>}
-                {!visit.assessment && <Pressable accessibilityRole="button" disabled={locked} onPress={() => { continueCase(record); void requestReview(record, visit.id); }} style={[styles.reviewButton, locked && styles.disabled]}><Text style={styles.reviewText}>{w.submit}</Text></Pressable>}
+                {!visit.assessment && <>
+                  {!!visit.stage && <Text style={styles.body}>{visit.stage}</Text>}
+                  {!!visit.location && <Text style={styles.body}>{visit.location}</Text>}
+                  <Text style={styles.status}>{analysisStatus(visit, language)}</Text>
+                  <Text style={styles.hint}>{language === 'ha' ? 'Za a aika hoton da bayanan da aka ajiye ne idan ka sake neman tantancewa.' : 'Retry sends the saved photo and details. Comparisons also send the previous visit’s photo.'}</Text>
+                  <Pressable accessibilityRole="button" disabled={locked} onPress={() => { void requestReview(record, visit.id); }} style={[styles.reviewButton, locked && styles.disabled]}><Text style={styles.reviewText}>{language === 'ha' ? 'Sake neman tantancewa' : 'Retry analysis'}</Text></Pressable>
+                </>}
               </View>
             </View>)}
             <Pressable accessibilityRole="button" disabled={locked} onPress={() => continueCase(record)} style={[styles.outlineButton, locked && styles.disabled]}><Text style={styles.outlineText}>{w.addFollowup} ↗</Text></Pressable>

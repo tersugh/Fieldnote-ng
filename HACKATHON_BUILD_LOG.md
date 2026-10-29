@@ -128,3 +128,11 @@
 - Android uses a selectable-text review modal and the installed native text Share API. No local photo URI is sent through its unsupported Android URL path. Errors leave the preview available for retry or manual copy; no delivery claim is made.
 - Added caseSharing.ts and test_case_sharing.mjs; updated web/mobile docs. Seven sharing fixture-test groups and six existing panel workflow checks passed through direct JavaScript execution. Installed Android TypeScript compiler API: zero diagnostics, no emit. Tests mock platform/storage/DOM behavior; real browser/device sheets, clipboard, photo targets and recipient delivery are not verified.
 - No dependencies added or upgraded; no backend, environment, secret, database schema, or AI request changes. No shell commands, builds, emulator, or real case uploads.
+
+## Save-first pending analysis on web and Android — 29 October 2026
+
+- Codex changed web analysis to commit the case/photo to IndexedDB before sending; added local-only save, pending/error states, saved-photo/detail reopening and explicit retry. Sharing is available for offline cases too.
+- Android now stores pending/error/complete metadata with each SQLite visit, preserves per-visit location, and uses a synchronous gate across save/copy/analysis. The new analysis helper loads stored photos and updates the same visit, merging with the latest saved case.
+- Both platforms distinguish connection/timeout/interrupted-response failures from input/configuration/model errors, stop loading on completion/failure, validate returned advice, and never automatically upload or retry. Existing clarification and photo-visit history are retained.
+- Expanded test_web_panel.mjs and added test_pending_android.mjs. Results: 10 web, 7 Android, and 7 sharing test groups passed; installed Android TypeScript compiler API returned no diagnostics with no emit. Tests use simulated DOM/storage/photo/network calls. Real IndexedDB/SQLite durability, restarts, live APIs, network interruptions and offline web-shell availability remain unverified.
+- Updated web/mobile docs. No backend storage, environment/secret edits, dependency changes, shell commands, builds, or emulator runs.
