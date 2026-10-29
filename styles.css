@@ -17,6 +17,12 @@ body.printing-case #print-report{display:block}
 .clarification-panel{border-top:1px solid var(--line);margin-top:16px;padding-top:16px;font-size:12px;color:var(--ink)}
 .result-card [hidden]{display:none!important}
 .result-card{scroll-margin-top:24px}
+.share-review{width:min(640px,calc(100% - 32px));max-height:90vh;overflow:auto;border:1px solid #dfe5dc;border-radius:18px;padding:24px;background:var(--paper);color:var(--ink)}
+.share-review::backdrop{background:rgba(30,46,37,.4)}
+.share-review p,.share-review label{font-size:13px;line-height:1.6}
+.share-review label{display:block;margin:14px 0 8px;font-weight:700}
+.share-review textarea{min-height:240px}
+.share-review [hidden]{display:none!important}
 .clarification-panel[hidden]{display:none}.clarification-panel h3{font:700 13px Manrope,sans-serif;margin:16px 0 10px}
 .clarification-visit,.clarification-history time{font-size:10px;color:var(--muted)}
 .clarification-history{padding-left:20px;margin:12px 0 20px}.clarification-history li{padding:0 0 16px 8px;border-left:2px solid #dfe9dc}

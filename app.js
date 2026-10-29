@@ -475,46 +475,175 @@ async function renderCasebook() {
   }
 }
 function formatDate(value) { return new Intl.DateTimeFormat(language==='ha'?'ha-NG':'en-NG', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)); }
-async function shareCaseWithWorker(record) {
-  const latest = record.observations[record.observations.length - 1];
-  const assessment = latest.assessment;
-  const cropName = language === 'ha' ? (cropNames.ha[record.crop] || record.crop) : record.crop;
-  const lines = language === 'ha' ? [
-    `Rahoton Fieldnote: ${cropName}`,
-    `Wuri: ${record.location || 'Ba a saka ba'}`,
-    ...record.observations.map((item, index) => `Ziyara ${index + 1} (${formatDate(item.date)}): ${item.symptoms}`),
-    ...(assessment ? [
-      `Abin da AI ta lura: ${assessment.visual_observations}`,
-      `Abubuwan da ka iya haddasawa: ${(assessment.possible_causes || []).map((cause) => cause.name).join(', ') || 'Ba a tabbatar ba'}`,
-      `Abin yi yanzu: ${(assessment.next_steps || []).join('; ')}`,
-      `Gaggawa da alamomin lura: ${assessment.urgency || assessment.escalation || ''}`,
-    ] : []),
-    'An samar da wannan rahoto a Fieldnote. Manomi yana neman ƙarin ra’ayi ne bisa zaɓinsa.',
-  ] : [
-    `Fieldnote crop case: ${cropName}`,
-    `Area: ${record.location || 'Not added'}`,
-    ...record.observations.map((item, index) => `Visit ${index + 1} (${formatDate(item.date)}): ${item.symptoms}`),
-    ...(assessment ? [
-      `AI observations: ${assessment.visual_observations}`,
-      `Possible causes: ${(assessment.possible_causes || []).map((cause) => cause.name).join(', ') || 'Unclear'}`,
-      `Recommended next steps: ${(assessment.next_steps || []).join('; ')}`,
-      `Urgency / warning signs: ${assessment.urgency || assessment.escalation || ''}`,
-    ] : []),
-    'Created in Fieldnote. The farmer is sharing this summary for an optional second opinion.',
+function buildCaseSummary(record, language = 'en') {
+  const ha = language === 'ha';
+  const label = (en, translated) => ha ? translated : en;
+  const clean = (value) => typeof value === 'string' ? value.trim() : '';
+  const date = (value) => {
+    const parsed = new Date(value || '');
+    return Number.isNaN(parsed.getTime()) ? label('Date not recorded', 'Ba a saka kwanan wata ba') : parsed.toISOString().slice(0, 10);
+  };
+  const visits = record.observations || [];
+  const lines = [
+    label('FIELDNOTE — Case summary', 'FIELDNOTE — Taƙaitaccen rahoto'),
+    label('Crop: ', 'Amfanin gona: ') + (clean(record.crop) || label('Not recorded', 'Ba a saka ba')),
   ];
-  const text = lines.join('\n');
-  try {
-    if (navigator.share) {
-      await navigator.share({ title: `Fieldnote · ${cropName}`, text });
-    } else if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      alert(language === 'ha' ? 'An kwafi taƙaitaccen rahoton. Ka manna shi a WhatsApp ko saƙo ga jami’in noma.' : 'Case summary copied. Paste it into WhatsApp or a message to the worker.');
-    } else {
-      await printFarmPlan(record);
-    }
-  } catch (error) {
-    if (error?.name !== 'AbortError') alert(language === 'ha' ? 'Ba a iya raba rahoton ba. Ka buga tsarin aikin gona ka aika da kanka.' : 'Could not share the case. Print the field plan and send it yourself.');
+  if (clean(record.location)) lines.push(label('Area: ', 'Wuri: ') + clean(record.location));
+  lines.push('', label('VISIT TIMELINE', 'JERIN ZIYARA'));
+  if (!visits.length) lines.push(label('No visits recorded.', 'Babu ziyara da aka ajiye.'));
+  visits.forEach((visit, index) => {
+    lines.push('', label('Visit ', 'Ziyara ') + (index + 1) + ' · ' + date(visit.date));
+    if (clean(visit.location)) lines.push(label('Area: ', 'Wuri: ') + clean(visit.location));
+    if (clean(visit.stage)) lines.push(label('Growth stage: ', 'Matakin girma: ') + clean(visit.stage));
+    lines.push(label('Farmer observations: ', 'Abin da manomi ya lura: ') + (clean(visit.symptoms) || label('Not recorded', 'Ba a saka ba')));
+    const turns = visit.clarifications || visit.refinements || [];
+    turns.forEach((turn) => {
+      lines.push(label('Question: ', 'Tambaya: ') + clean(turn.question));
+      lines.push(label('Farmer answer: ', 'Amsar manomi: ') + (clean(turn.answer) || label('Not answered', 'Ba a amsa ba')));
+      if (!turn.assessment) lines.push(label('(Advice has not been updated for this answer.)', '(Ba a sabunta shawara kan wannan amsar ba.)'));
+    });
+    const question = clean(visit.assessment?.follow_up_question);
+    if (question) lines.push(label('Current question: ', 'Tambayar yanzu: ') + question);
+  });
+  const adviceIndex = visits.map((visit) => !!visit.assessment).lastIndexOf(true);
+  lines.push('', label('LATEST SAVED AI GUIDANCE', 'SABUWAR SHAWARAR AI DA AKA AJIYE'));
+  if (adviceIndex < 0) {
+    lines.push(label('No AI guidance saved. These are farmer observations only.', 'Ba a ajiye shawarar AI ba. Waɗannan bayanan manomi ne kawai.'));
+  } else {
+    const visit = visits[adviceIndex];
+    const advice = visit.assessment;
+    lines.push(label('For visit ', 'Na ziyara ') + (adviceIndex + 1) + ' · ' + date(visit.date));
+    if (adviceIndex < visits.length - 1) lines.push(label('The newest visit has not received AI guidance.', 'Sabuwar ziyara ba ta samu shawarar AI ba.'));
+    if (clean(advice.visual_observations)) lines.push(label('AI observations: ', 'Abin da AI ta lura: ') + clean(advice.visual_observations));
+    if (advice.possible_causes?.length) lines.push(label('Possible explanations (not confirmed): ', 'Abubuwan da ka iya haddasawa (ba a tabbatar ba): ') + advice.possible_causes.map((cause) => clean(cause.name)).filter(Boolean).join('; '));
+    (advice.next_steps || []).forEach((step, index) => lines.push((index + 1) + '. ' + clean(step)));
+    if (clean(advice.urgency || advice.escalation)) lines.push(label('Urgency / warning signs: ', 'Gaggawa da alamomin lura: ') + clean(advice.urgency || advice.escalation));
   }
+  lines.push('', label('AI guidance may be uncertain. The farmer is choosing to request a second opinion; this is not a confirmed diagnosis.', 'Shawarar AI na iya yin kuskure. Manomi ya zaɓi neman ƙarin ra’ayi; wannan ba tabbataccen bincike ba ne.'));
+  return lines.join('\n');
+}
+
+async function shareWebSummary(text, photo, platform = navigator) {
+  if (typeof platform.share !== 'function') return 'unavailable';
+  const payload = { title: 'Fieldnote', text };
+  if (photo) {
+    try {
+      if (!platform.canShare?.({ ...payload, files: [photo] })) return 'unsupported-photo';
+    } catch { return 'unsupported-photo'; }
+    payload.files = [photo];
+  }
+  try {
+    await platform.share(payload);
+    return 'opened';
+  } catch (error) {
+    return error?.name === 'AbortError' ? 'cancelled' : 'failed';
+  }
+}
+
+async function copyCaseSummary(text, platform = navigator) {
+  try {
+    if (!platform.clipboard?.writeText) return false;
+    await platform.clipboard.writeText(text);
+    return true;
+  } catch { return false; }
+}
+
+function downloadCaseSummary(text) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'fieldnote-case-summary.txt';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function shareCaseWithWorker(record) {
+  const ha = language === 'ha';
+  const label = (en, translated) => ha ? translated : en;
+  const dialog = document.querySelector('#share-review');
+  const summary = document.querySelector('#share-summary');
+  const status = document.querySelector('#share-status');
+  const photoChoice = document.querySelector('#share-photo');
+  const photoButton = document.querySelector('#share-with-photo');
+  const textButton = document.querySelector('#share-text');
+  const closeButton = document.querySelector('#share-close');
+  const preview = document.querySelector('#share-photo-preview');
+  const opener = document.activeElement;
+  let previewUrl = null;
+  let pending = false;
+  const text = buildCaseSummary(record, language);
+  summary.value = text;
+  status.textContent = '';
+  document.querySelector('#share-title').textContent = label('Review before sharing', 'Duba rahoto kafin rabawa');
+  document.querySelector('#share-explanation').textContent = label('Optional: ask an extension worker for a second opinion. Review the saved details below, then choose who receives them. Nothing is uploaded by Fieldnote.', 'Zaɓi ne: nemi ƙarin ra’ayin jami’in noma. Duba bayanan da ke ƙasa sannan ka zaɓi wanda za a aika wa. Fieldnote ba ta aika bayanan zuwa sabar ba.');
+  document.querySelector('#share-summary-label').textContent = label('Case summary (select text to copy manually)', 'Taƙaitaccen rahoto (zaɓi rubutu don kwafawa)');
+  document.querySelector('#share-photo-label').textContent = label('Optional photo from a saved visit', 'Hoto daga ziyarar da aka ajiye (zaɓi ne)');
+  textButton.textContent = label('Share summary only', 'Raba rubutu kawai');
+  photoButton.textContent = label('Share summary and selected photo', 'Raba rubutu da hoton da aka zaɓa');
+  document.querySelector('#share-copy').textContent = label('Copy summary', 'Kwafi rahoto');
+  document.querySelector('#share-download').textContent = label('Download summary', 'Sauke rahoto');
+  closeButton.textContent = label('Close', 'Rufe');
+  const photos = [];
+  photoChoice.replaceChildren();
+  (record.observations || []).forEach((visit, index) => {
+    const photo = visit.photo;
+    if (!(photo instanceof Blob) || !photo.size || !['image/jpeg', 'image/png', 'image/webp'].includes(photo.type)) return;
+    const file = new File([photo], 'fieldnote-visit-' + (index + 1) + ({ 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' }[photo.type]), { type: photo.type });
+    try {
+      if (!navigator.canShare?.({ title: 'Fieldnote', text, files: [file] })) return;
+    } catch { return; }
+    const option = document.createElement('option');
+    option.value = String(photos.length);
+    option.textContent = label('Visit ', 'Ziyara ') + (index + 1) + ' · ' + formatDate(visit.date);
+    photos.push(file);
+    photoChoice.append(option);
+  });
+  document.querySelector('#share-photo-controls').hidden = !photos.length || !navigator.share;
+  textButton.hidden = !navigator.share;
+  const releasePreview = () => { if (previewUrl) URL.revokeObjectURL(previewUrl); previewUrl = null; };
+  const updatePhoto = () => {
+    releasePreview();
+    const photo = photos[Number(photoChoice.value)];
+    preview.hidden = !photo;
+    if (photo) { previewUrl = URL.createObjectURL(photo); preview.src = previewUrl; }
+    else preview.removeAttribute('src');
+  };
+  photoChoice.value = String(Math.max(0, photos.length - 1));
+  photoChoice.onchange = updatePhoto;
+  updatePhoto();
+  const setPending = (value) => {
+    pending = value;
+    textButton.disabled = photoButton.disabled = closeButton.disabled = photoChoice.disabled = value;
+  };
+  const share = async (photo) => {
+    if (pending) return;
+    setPending(true);
+    try {
+      const result = await shareWebSummary(text, photo);
+      status.textContent = result === 'opened' ? label('Share options used. Delivery is not confirmed.', 'An yi amfani da zaɓin rabawa. Ba a tabbatar da isarwa ba.')
+        : result === 'cancelled' ? label('Sharing cancelled. Your saved case is unchanged.', 'An soke rabawa. Rahoton da aka ajiye bai canza ba.')
+        : label('Sharing was unavailable or failed. Try sharing the summary only, copy it, or download it.', 'Ba a samu rabawa ba ko ta gaza. Gwada rubutu kawai, kwafa, ko sauke rahoton.');
+    } finally { setPending(false); }
+  };
+  textButton.onclick = () => share(null);
+  photoButton.onclick = () => share(photos[Number(photoChoice.value)]);
+  document.querySelector('#share-copy').onclick = async () => {
+    const copied = await copyCaseSummary(text);
+    status.textContent = copied ? label('Summary copied. Paste it into your chosen message.', 'An kwafi rahoto. Manna shi a saƙon da ka zaɓa.')
+      : label('Copy was unavailable. Select and copy the text below, or download it.', 'Ba a samu kwafawa ba. Zaɓi rubutu ka kwafa, ko sauke shi.');
+    if (!copied) { summary.focus(); summary.select(); }
+  };
+  document.querySelector('#share-download').onclick = () => {
+    try { downloadCaseSummary(text); status.textContent = label('Summary download requested.', 'An nemi sauke rahoto.'); }
+    catch { status.textContent = label('Download failed. Select and copy the summary.', 'Sauke rahoto ya gaza. Zaɓi rubutu ka kwafa.'); summary.focus(); summary.select(); }
+  };
+  closeButton.onclick = () => { if (!pending) dialog.close(); };
+  dialog.oncancel = (event) => { if (pending) event.preventDefault(); };
+  dialog.onclose = () => { releasePreview(); opener?.focus(); };
+  dialog.showModal();
+  summary.focus();
 }
 function activateCase(record) {
   activeCaseId = record.id;

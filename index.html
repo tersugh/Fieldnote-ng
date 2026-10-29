@@ -83,6 +83,25 @@
       </section>
     </main>
     <footer><span>FIELDNOTE</span><span id="footer-copy">Built during Meta Global AI Developer Hackathon · 2026</span></footer>
+    <dialog id="share-review" class="share-review" aria-labelledby="share-title" aria-describedby="share-explanation">
+      <h2 id="share-title">Review before sharing</h2>
+      <p id="share-explanation"></p>
+      <label id="share-summary-label" for="share-summary">Case summary</label>
+      <textarea id="share-summary" readonly rows="14"></textarea>
+      <div id="share-photo-controls" hidden>
+        <label id="share-photo-label" for="share-photo">Optional photo from a saved visit</label>
+        <select id="share-photo"></select>
+        <img id="share-photo-preview" class="preview" alt="" hidden>
+        <button id="share-with-photo" type="button" class="new-case-button">Share summary and selected photo</button>
+      </div>
+      <div class="case-actions">
+        <button id="share-text" type="button" class="new-case-button">Share summary only</button>
+        <button id="share-copy" type="button" class="new-case-button">Copy summary</button>
+        <button id="share-download" type="button" class="new-case-button">Download summary</button>
+      </div>
+      <p id="share-status" role="status"></p>
+      <button id="share-close" type="button" class="new-case-button">Close</button>
+    </dialog>
     <script src="/app.js" defer></script>
     <div id="print-report" aria-hidden="true"></div>
   </body>

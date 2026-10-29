@@ -24,6 +24,7 @@ import * as SQLite from 'expo-sqlite';
 import { File } from 'expo-file-system';
 import { useAudioStream, requestRecordingPermissionsAsync, setAudioModeAsync } from 'expo-audio';
 import { prepareTranscriptionWav } from './voice';
+import { buildCaseSummary, shareCaseSummary } from './caseSharing';
 
 declare const process: { env: { EXPO_PUBLIC_API_BASE_URL?: string } };
 
@@ -291,6 +292,10 @@ function Dropdown({ label, value, options, onChange, disabled, closeLabel }: {
 export default function App() {
   const [language, setLanguage] = useState<Language>('en');
   const [cases, setCases] = useState<CropCase[]>([]);
+  const [sharePreview, setSharePreview] = useState<string | null>(null);
+  const [shareStatus, setShareStatus] = useState('');
+  const [sharing, setSharing] = useState(false);
+  const sharePending = useRef(false);
   const [activeCase, setActiveCase] = useState<CropCase | null>(null);
   const [crop, setCrop] = useState('');
   const [location, setLocation] = useState('');
@@ -799,40 +804,23 @@ export default function App() {
     }
   }
 
-  async function shareCaseWithWorker(record: CropCase) {
-    const latest = record.observations.at(-1);
-    if (!latest) return;
-    const assessment = latest.assessment;
-    const message = language === 'ha'
-      ? [
-          `Rahoton Fieldnote: ${record.crop}`,
-          `Wuri: ${record.location || 'Ba a saka ba'}`,
-          ...record.observations.map((item, index) => `Ziyara ${index + 1} (${new Date(item.date).toLocaleDateString()}): ${item.symptoms}`),
-          ...(assessment ? [
-            `Abin da AI ta lura: ${assessment.visual_observations}`,
-            `Abubuwan da ka iya haddasawa: ${assessment.possible_causes.map((item) => item.name).join(', ') || 'Ba a tabbatar ba'}`,
-            `Abin yi yanzu: ${assessment.next_steps.join('; ')}`,
-            `Gaggawa da alamomin lura: ${assessment.urgency || assessment.escalation || ''}`,
-          ] : []),
-          'Manomi yana neman ƙarin ra’ayi ne bisa zaɓinsa.',
-        ].join('\n')
-      : [
-          `Fieldnote crop case: ${record.crop}`,
-          `Area: ${record.location || 'Not added'}`,
-          ...record.observations.map((item, index) => `Visit ${index + 1} (${new Date(item.date).toLocaleDateString()}): ${item.symptoms}`),
-          ...(assessment ? [
-            `AI observations: ${assessment.visual_observations}`,
-            `Possible causes: ${assessment.possible_causes.map((item) => item.name).join(', ') || 'Unclear'}`,
-            `Recommended next steps: ${assessment.next_steps.join('; ')}`,
-            `Urgency / warning signs: ${assessment.urgency || assessment.escalation || ''}`,
-          ] : []),
-          'The farmer is sharing this case for an optional second opinion.',
-        ].join('\n');
+  function shareCaseWithWorker(record: CropCase) {
+    setSharePreview(buildCaseSummary(record, language));
+    setShareStatus('');
+  }
+
+  async function confirmShare() {
+    if (!sharePreview || sharePending.current) return;
+    sharePending.current = true;
+    setSharing(true);
     try {
-      await Share.share({ title: t.share, message });
-    } catch (error) {
-      const messageText = error instanceof Error ? error.message : t.error;
-      Alert.alert(t.error, messageText);
+      await shareCaseSummary(sharePreview, (content) => Share.share(content));
+      setShareStatus(language === 'ha' ? 'An buɗe zaɓin rabawa. Ba a tabbatar da isarwa ba.' : 'Share options opened. Delivery is not confirmed.');
+    } catch {
+      setShareStatus(language === 'ha' ? 'Ba a iya buɗe rabawa ba. Sake gwadawa ko zaɓi rubutun ka kwafa.' : 'Could not open sharing. Try again or select and copy the summary below.');
+    } finally {
+      sharePending.current = false;
+      setSharing(false);
     }
   }
 
@@ -950,6 +938,16 @@ export default function App() {
         </View>
         <View style={styles.footer}><Text style={styles.footerBrand}>FIELDNOTE</Text><Text style={styles.hint}>{w.footer}</Text></View>
       </ScrollView>
+      <Modal visible={sharePreview !== null} transparent animationType="fade" onRequestClose={() => { if (!sharing) setSharePreview(null); }}>
+        <View style={styles.modalBackdrop}><View style={styles.modalCard} accessibilityViewIsModal>
+          <Text style={styles.sectionTitle}>{language === 'ha' ? 'Duba rahoto kafin rabawa' : 'Review before sharing'}</Text>
+          <Text style={styles.body}>{language === 'ha' ? 'Za ka zaɓi wanda za a aika wa. Rubutu kawai; ba a haɗa hoto ba. Za ka iya zaɓar rubutun ka kwafa.' : 'Choose who receives this summary in your phone’s share options. Text only; no photo is attached. You can also select and copy the text.'}</Text>
+          <ScrollView><Text selectable style={styles.body}>{sharePreview}</Text></ScrollView>
+          {!!shareStatus && <Text accessibilityLiveRegion="polite" style={styles.body}>{shareStatus}</Text>}
+          <Pressable accessibilityRole="button" disabled={sharing} onPress={confirmShare} style={[styles.primaryButton, sharing && styles.disabled]}><Text style={styles.primaryText}>{sharing ? (language === 'ha' ? 'Ana buɗewa…' : 'Opening…') : t.share}</Text></Pressable>
+          <Pressable accessibilityRole="button" disabled={sharing} onPress={() => setSharePreview(null)} style={styles.outlineButton}><Text style={styles.outlineText}>{language === 'ha' ? 'Rufe' : 'Close'}</Text></Pressable>
+        </View></View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }

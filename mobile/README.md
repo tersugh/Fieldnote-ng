@@ -71,3 +71,11 @@ For a saved assessment, choose View advice / answer question on the visit, type 
 Tests added to test_server.py cover refine context, Hausa text, input/assessment validation, upstream failure, separation from /api/followup, WAV metadata/silence/truncation, multipart file delivery, and response-contract errors. They use synthetic fixtures and mocked upstream requests. No commands, tests, builds, or emulator were run. No dependency installation is required for this change.
 
 Device checks: record an English sentence and a silent clip; inspect only the aggregate diagnostics; test microphone denial and interruption; ensure typed edits survive failed/empty transcription. For refinement, save an answer offline, restart and reopen the visit, submit it, answer the next question, and check that earlier Q&A/revisions remain and no extra photo visit was created. Retry a failed update and confirm the pending turn is reused.
+
+## Optional case-summary sharing — 29 October 2026
+
+The saved-case share action now opens a review modal before any native share call. The summary includes optional location and stage, all saved visits and observations, clarification questions/answers, and the latest saved advice labelled by visit. Older guidance remains labelled when the newest note is offline. Text is selectable for manual copying. Share failures preserve the review and offer retry; no delivery confirmation is claimed.
+
+The installed React Native 0.88 Share API exposes text sharing on Android; local URL sharing is iOS-only. Android therefore shares the complete text summary without a photo and says so before sharing. No attachment dependency, backend upload, schema change, or AI request was added. `caseSharing.ts` provides the pure summary builder and injectable native-share adapter.
+
+Verification: shared web/Android fixture tests passed, including missing fields, clarification history, Hausa parity, literal text, native text payload, dismissal, and rejection. Native modal wiring/selectable fallback was checked statically. The installed TypeScript compiler API returned no diagnostics with no emit. Actual Android share-sheet launch, long-press copy, cancellation, layout, and receiving-app text remain device checks; no emulator, build, or shell command was run.
