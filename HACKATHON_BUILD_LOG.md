@@ -114,3 +114,9 @@
 - Added ordered per-visit Q&A history and revised assessments in IndexedDB, serialized draft saves, pending-turn retry, and per-visit casebook reopening. Fixed result lifecycle ordering that hid freshly returned advice and acknowledged writes only after transaction commit.
 - Reused browser voice recording/transcription for editable English answers with destination/session tracking, consent, cancellation, and error handling. Hausa voice remains disabled; typed answers work in both interfaces. Escaped model and farmer text in rendered conversation content.
 - Updated web documentation. No commands, tests, builds, emulator changes, secret access, or dependency changes performed. No web-specific test suite was present; browser behavior remains unverified.
+
+## Web result-panel transition — 29 October 2026
+
+- Codex identified author `display:flex` rules overriding the browser's `hidden` styles on the empty and loading states. Added a panel-scoped hidden rule so the result replaces those states visibly.
+- Kept prior advice and clarification drafts visible when selecting a comparison photo, preparing a later visit, and on request failure. Successful diagnosis, comparison, and refinement focus and scroll the existing field-case panel, respecting reduced motion and resetting the advice scroll position. Removed the redundant casebook scroll call; retained the branding and separate visit/conversation workflows.
+- Added `test_web_panel.mjs` and updated web documentation. Six success/failure workflow checks passed by executing JavaScript directly with simulated DOM, storage, and HTTP; static checks cover the CSS hidden rule and single result container. No shell commands, builds, emulator, live service calls, dependency changes, backend/Android edits, or secret access. Actual browser layout and IndexedDB verification remain pending.

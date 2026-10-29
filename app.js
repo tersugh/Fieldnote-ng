@@ -330,7 +330,7 @@ photoInput.addEventListener('change', async () => {
     showError('Choose a JPG, PNG, or WebP image smaller than 8 MB.');
     return;
   }
-  clearResult();
+  errorState.hidden = true;
   preview.src = URL.createObjectURL(file);
   preview.hidden = false;
   uploadMain.textContent = file.name;
@@ -414,7 +414,6 @@ casebookList.addEventListener('click', async (event) => {
   if (!record) return;
   if (button.dataset.action === 'advice') {
     showSavedAdvice(record, Number(button.dataset.visitIndex));
-    document.querySelector('#result-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } else if (button.dataset.action === 'continue') {
     activateCase(record);
     clearPhotoInput();
@@ -535,7 +534,7 @@ function activateCase(record) {
   symptoms.value = '';
   symptoms.placeholder = language==='ha'?'Me ya canza tun ziyarar baya? Rubuta sabbin alamu ko abin da kuka gwada…':'What has changed since the last visit? Note new signs, spread, or anything you tried…';
   symptoms.dispatchEvent(new Event('input'));
-  clearResult();
+  showSavedAdvice(record, record.observations.length - 1, false);
   voiceStatus.textContent = language==='ha'?tr('voiceHausaOff'):'Add what changed since the last visit. Your transcript will be added here for review.';
 }
 function clearPhotoInput() {
@@ -582,7 +581,7 @@ function setLoading(isLoading) {
   submitButton.disabled = isLoading;
   document.getElementById('submit-copy').textContent = isLoading ? (activeCaseId ? tr('followLoading') : tr('firstLoading')) : (activeCaseId ? tr('comparing') : tr('submit'));
   loadingState.hidden = !isLoading;
-  if (isLoading) { emptyState.hidden = true; errorState.hidden = true; analysisResult.hidden = true; clarificationPanel.hidden = true; }
+  if (isLoading) { emptyState.hidden = true; errorState.hidden = true; }
 }
 function clearResult() {
   cancelRecording();
@@ -602,7 +601,7 @@ function localizeError(message) {
   if(message.includes('analysis failed')||message.includes('assessment could not')) return 'Ba a kammala tantancewar ba. Ka sake gwadawa.';
   return message;
 }
-function showError(message) { loadingState.hidden = true; emptyState.hidden = true; analysisResult.hidden = true; errorState.textContent = localizeError(message); errorState.hidden = false; }
+function showError(message) { loadingState.hidden = true; emptyState.hidden = true; errorState.textContent = localizeError(message); errorState.hidden = false; }
 function safeText(value) { return String(value ?? ''); }
 function list(items) { if (!Array.isArray(items) || !items.length) return `<p>${tr('noChecks')}</p>`; return `<ul>${items.map((item) => `<li>${escapeHtml(safeText(item))}</li>`).join('')}</ul>`; }
 function escapeHtml(value) { return value.replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
@@ -613,13 +612,19 @@ function renderAssessment(a, isFollowup = false) {
 }
 
 
-function showSavedAdvice(record, index) {
+function showSavedAdvice(record, index, bringIntoView = true) {
   const visit = record.observations[index];
   if (!visit?.assessment) return;
   cancelRecording();
   displayedCase = record;
   displayedVisit = index;
   renderSavedAdvice();
+  analysisResult.scrollTop = 0;
+  if (bringIntoView) {
+    const panel = document.querySelector('#result-card');
+    panel.focus({ preventScroll: true });
+    panel.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  }
 }
 
 function renderSavedAdvice() {
