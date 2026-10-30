@@ -1,99 +1,78 @@
-# Fieldnote Android client
+# Fieldnote Android
 
-This is the Android-first React Native client. It targets affordable Android phones and keeps crop records on the device so farmers can capture evidence without a live connection.
+Implemented Expo/React Native client. **Expo Go launch, Hausa text use and the Android photo-to-recommendation flow were previously user-verified**; no fresh combined release smoke test is recorded. The active entry is [index.ts](index.ts), which registers [App.tsx](App.tsx). Current packages: Expo SDK 58, React Native 0.88, React 19.3. Feature/Meta status is maintained in the [root README](../README.md#current-workflow-and-meta-technology).
 
-## Current slice
+The crop choices match the web app: [32 named crops plus Other](../README.md#crops-and-languages). They are form options, not validated crop/disease coverage. English/Hausa text and requested advice language are implemented; some operational messages remain English, and switching language does not translate saved advice. Hausa voice is not enabled.
 
-- English/Hausa app interface.
-- Crop incident and follow-up note form.
-- Camera or gallery photo selection, resized to a maximum 1600-pixel edge and compressed as JPEG, then copied into app-private storage.
-- SQLite casebook that survives app restarts.
-- Explicit save-on-device and get-crop-advice actions.
-- Muse Spark first-assessment and follow-up API payloads. The API key is not included in this app.
+## Setup
 
-## Run
+Use Node matching React Native's installed engine range: `^22.13.0 || ^24.3.0 || >=26.0.0`. Use an Android device/emulator and Expo runtime compatible with SDK 58.
 
-Requires Node.js 22.13 or newer and an Android 7+ device/emulator. Expo SDK 58 is paired with React Native 0.88; see the [Expo SDK 58 reference](https://docs.expo.dev/versions/v58.0.0/).
+From this directory:
 
 ```bash
+# First setup only: do not overwrite an existing mobile/.env.
 cp .env.example .env
-# Edit .env and set EXPO_PUBLIC_API_BASE_URL to the HTTPS server address.
-npm install
+# Set EXPO_PUBLIC_API_BASE_URL to the reachable Fieldnote API base URL.
+npm ci
 npm run android
+# Or: npm start, then open that terminal's exact URL in compatible Expo Go.
 ```
 
-The server must be reachable from the phone. Do not put `MODEL_API_KEY` in this app or in `EXPO_PUBLIC_*`; configure it only in the server environment.
+`npm run android` is `expo start --android`, not an APK build. A compatible Android runtime and the host's device/emulator tooling must already be available. The previously confirmed Expo Go launch does not establish compatibility on every intended device or verify a standalone build.
 
-## Offline and data behavior
+Run the Python server separately as described in the root README. It binds to host loopback, not the LAN. The standard Android emulator's host alias is usually `http://10.0.2.2:8000`; verify reachability and runtime HTTP policy. A physical phone needs a reachable API deployment/guarded HTTPS forwarding route. Do not expose the development server's repository-wide static directory publicly.
 
-- Saving a field note writes its crop record to SQLite and copies its photo into app-private storage.
-- Requesting crop advice is a separate user action. The image is sent to the server only after that action.
-- If the network request fails, the local observation remains saved. The farmer can retry from the casebook.
-- Photos are resized and compressed on-device before storage or upload to limit mobile data and peak memory use.
+`EXPO_PUBLIC_API_BASE_URL` contains only the server URL. Keep `MODEL_API_KEY` in the server environment/root `.env`, never in mobile code or any `EXPO_PUBLIC_*` variable. `expo-audio` is already in package.json and package-lock.json; `npm ci` installs it. No notification package is installed.
 
-Photo preparation uses the installed `expo-image-manipulator` package's named `ImageManipulator` object export and its contextual API (`manipulate`, `resize`, `renderAsync`, `saveAsync`). This is not a namespace import. It bounds image loading, resizes the longer edge to 1600 pixels when needed, and saves JPEG at quality 0.65. Camera/gallery permissions, cancellation, preview, and the app-private copy on field-note save are preserved. Each failure identifies its step and revision; cleanup failures do not discard a successfully prepared photo. Device verification is still pending.
+If an old screen appears, confirm Expo's “Starting project at” points to **this checkout's mobile directory** and open its exact printed URL. Port/cache clearing alone does not identify the checkout. Development builds display the `android-parity-photo-v2` revision marker.
 
-## Confirm the emulator is loading this checkout
+## Implemented farmer workflow
 
-The Expo project directory is `/Users/alberttersugh/Downloads/HACKATHON 2026/fieldnote-hackathonv1/mobile`, not the repository root. Its explicit entry is `index.ts`, which imports `./App` and registers it with Expo. The previous `expo/AppEntry` also resolved to this App; no competing App file was found in this checkout.
+- **Capture:** crop/Other, growth stage, area, notes, camera/gallery permissions and cancellation, filename/preview. The named `ImageManipulator` contextual API produces JPEG at quality 0.65 with a maximum 1600-pixel edge. Saving copies the prepared image into app-private storage. Photo errors identify the failing step. The user previously confirmed that an Android photo flow returned a recommendation; separate camera/gallery paths, cancellation, resizing and restart durability are not thereby verified.
+- **English voice notes:** explicit consent and microphone permission, up to 30 seconds. The app awaits WAV finalization, validates/normalizes PCM with [voice.ts](voice.ts), then requests `/api/transcribe`. Successful text is editable; typed notes remain usable on failure. Hausa voice is disabled. Hausa typed notes and requested model output are supported but need fluent-speaker review.
+- **Save first / retry:** SQLite JSON records and private photo files retain visits before analysis. Save-only does not upload. **Retry analysis** uses the stored photo/details and updates the same visit. Network/timeout failures remain pending; input, configuration and model errors show needs-attention status. Duplicate actions are guarded; no background retry.
+- **Photo visits:** adding a dated visit to an existing case uses `/api/followup` with the immediately preceding photo/note. Initial visits use `/api/diagnose`.
+- **Clarification:** select a saved visit, type an answer and choose **Save answer offline** or **Update advice**. `/api/refine` updates that visit and retains Q&A/revisions, without adding a photo visit. **Android voice answers are not enabled**, even though voice field notes are implemented.
+- **Optional sharing:** review the saved-case summary, then use native **text-only** sharing or manually copy selectable text. No Android photo attachment or printable field-plan export is implemented. Sharing does not call the Fieldnote backend; delivery is not confirmed.
+- **Checklist:** snapshot existing advice wording per visit, mark To do/Done/Skipped, add notes up to 300 characters, then Save progress. Later advice does not replace the snapshot.
+- **Recheck:** set/change/dismiss a case-level local date/time (`YYYY-MM-DD HH:mm`). Due cases appear first and open photo follow-up on the same case. Reminders are **in-app only**, refreshed while open/on foreground return. **No notifications are sent when the app is closed.** No notification permission is requested, so denial cannot block these local controls.
+- **SAM 3.1:** planned only; no segmentation integration exists.
 
-Start Expo from that mobile directory, then open the exact URL printed by that terminal in Expo Go. Check that the terminal's `Starting project at` path matches that directory. The port alone does not identify a checkout. In development, the updated screen shows `android-parity-photo-v2` below Hackathon prototype, followed by Notice a change / Know what to do next and the crop dropdown. If the marker is absent, investigate which project/bundle Expo Go loaded before testing this photo fix. Clearing a different server's cache does not identify the bundle shown by the emulator.
+All checklist/reminder changes use existing SQLite records without a schema migration or AI request. Local recovery paths are implemented; clearing app data removes local records, and actual restart durability still requires device verification.
 
-Test gallery and camera, cancellation, portrait/landscape photos above 1600 pixels, small photos, preview, and offline save/reopen. If a photo fails, report the entire alert including its revision and step. The original namespace call to `manipulate` was invalid; the subsequent `manipulateAsync` export does exist but wraps several native calls and cleanup. The latest emulator failure cannot be attributed to a particular call from the generic alert alone. No commands, builds, or emulator tests were run during this investigation.
+## Code map
 
-## Current limitations
+| File | Responsibility |
+| --- | --- |
+| [App.tsx](App.tsx) | UI, SQLite operations, photo/voice capture, saved visits and clarification flow. |
+| [analysis.ts](analysis.ts) | Saved-visit analysis, result validation, error status and operation gate. |
+| [voice.ts](voice.ts) | WAV validation and normalization; aggregate diagnostics, not proof of intelligible speech. |
+| [caseSharing.ts](caseSharing.ts) | Local summary and native text-share adapter. |
+| [caseActions.ts](caseActions.ts), [CaseActionPanel.tsx](CaseActionPanel.tsx) | Checklist state/date helpers and offline controls. |
+| [app.json](app.json) | Camera/microphone permissions and Expo plugins; background recording disabled. |
 
-- This initial client has not yet been built or tested on a physical Android phone or emulator.
-- English voice recording/transcription and the revised form/visit UI need device verification. Farmer field-plan export and photo compression benchmarks remain outstanding.
-- Hausa UI and model output need fluent-speaker review. Voice transcription remains English-only.
-- A configured HTTPS API endpoint is required for Meta analysis. Model analysis is not available offline.
+## Verification
 
-## Android web parity and English voice — 27 October 2026
+```bash
+npm run typecheck
+cd ..
+# Now at repository root:
+node test_pending_android.mjs
+node test_case_sharing.mjs
+node test_case_actions.mjs
+node test_web_panel.mjs
+python3 -m unittest -v
+```
 
-The single-column form follows the web palette, spacing, copy, crop choices (including Other), and growth stages. Android system sans-serif fonts approximate the web DM Sans/Manrope typography without remote font loading. The primary Review this plant action saves locally before requesting advice; Save field note offline remains separate. Saved visits retain photos, dated notes, review retry, follow-ups, and optional sharing.
+**Previously recorded automated results, 30 October 2026:** the installed TypeScript compiler API returned zero diagnostics with no emit. Client fixture suites passed 32 distinct groups overall, including 7 Android save/retry groups and cross-platform sharing/checklist tests. They execute selected handlers/helpers against simulated stores/photos/network; they are not Android UI tests. Server WAV/refinement tests exist but were not rerun in that audit. **No tests were rerun for this documentation-only correction.**
 
-Install the newly declared SDK-compatible dependency from mobile with `npx expo install expo-audio`. Expo 58.0.20 lists `expo-audio ~58.0.10` in bundledNativeModules.json. The package lock has deliberately not been regenerated; the install will update it. No other dependency upgrade is required. Microphone permission is configured for native builds, including removing the image-picker configuration that previously explicitly blocked RECORD_AUDIO.
+**Previously user-verified:** Expo Go opened, Hausa text worked and the Android photo flow returned a recommendation. The user also confirmed the web result-panel update and that the action tracker worked as intended; the tracker report does not establish a separate pass on each platform or restart durability. These earlier checks were not a fresh combined release smoke test.
 
-English voice uses SDK 58 AudioStream with int16 PCM, not the AAC/M4A recording preset. After explicit consent, recording stops at 30 seconds (or manually), finalizes WAV, normalizes to mono 24 kHz / 16-bit PCM, and posts audio_data_url to /api/transcribe. The endpoint accepts mono 16-bit WAV at 16 or 24 kHz, at most 5 MB. Temporary audio is removed after completion, failure, or interruption. Existing typed notes are preserved on failure; successful text is editable before saving. Hausa voice stays disabled because transcription is not verified.
+**Voice was exercised, not reliably verified:** recording reached a “no speech” error. Successful transcription and editable-transcript delivery still need verification. Hausa voice remains disabled.
 
-The browser error Unable to decode audio data comes from convertToWav calling AudioContext.decodeAudioData before the network request. Browser decoder/container incompatibility, empty audio, or truncation need the actual failing recording to distinguish; it is not normal UI copy or a server transcription response. Native PCM avoids that browser decoding step.
+**Still unverified:** restart/storage and checklist durability, Hausa linguistic quality and agronomic accuracy. Separate camera/gallery permission/cancellation and resize checks, microphone denial/interruption, offline retry, photo comparison, clarification and reminder timing/foreground refresh also need confirmation. Sharing notes record implementation and mocked tests, not successful native share-sheet or recipient-delivery checks. No build, emulator or live-service check was performed for this correction.
 
-Manual verification still required: camera/gallery permission and cancellation; portrait/landscape/small-image preview and saved files; crop Other and all stage choices; English microphone denial, stop/30-second limit, background interruption, offline/server failure and transcript editing; disabled Hausa voice; offline save/restart, review retry, dated follow-up, and sharing. No commands, builds, typechecks, or emulator were run for this change.
+## Screenshots and remaining work
 
-## Voice diagnostics and answer refinement — 27 October 2026
-
-Recording finalization was traced in the installed expo-audio Android sources: stopFileRecordingAsync calls writer.finish under the file-writer lock; finish updates the WAV header, syncs the descriptor, and closes the file before returning. The app awaits this before reading bytes. It now compares the finalized metadata with RIFF length, PCM format, sample rate, channels, sample width, frame alignment, data length, and duration. It checks the normalized PCM samples for zero/constant signals and shows only aggregate duration/rate/channel/peak/RMS information, never audio samples or base64. Hardware fallback rates are still normalized to mono 24 kHz, 16-bit PCM.
-
-The server independently validates WAV bytes and 0.25–30-second duration, rejects empty/silent/constant/truncated/unsupported audio, and sends raw WAV in the existing multipart request/audio parts to Meta's file endpoint. A missing transcript field is now a response-contract error; an empty transcript after valid non-silent audio is reported accurately, without assuming the room is noisy. Non-silent audio does not prove intelligible speech. On an emulator, verify host microphone input as well as app permission. No actual failing recording or live Meta response was available in this workspace, so the capture-level cause and transcription success remain unverified. Temporary recordings are still deleted; typed notes remain usable and edits made during transcription are preserved. Hausa voice is disabled in the UI and rejected by the server.
-
-For a saved assessment, choose View advice / answer question on the visit, type an answer, then Update advice. This saves the pending answer locally before requesting /api/refine with the original visit's crop, photo, notes, stage, location, previous assessment, question, answer, and up to 20 earlier completed Q&A turns. It does not create a visit or call the photo-comparison /api/followup route. Save answer offline keeps a pending turn without sending anything. Reopen the same visit to resume it after restarting. Successful responses replace that visit's current assessment and retain the prior/revised assessments and dated Q&A history in its SQLite JSON record; older cases need no schema migration. A next question can be answered in the same way. Voice answers are intentionally not enabled until transcription is verified.
-
-Tests added to test_server.py cover refine context, Hausa text, input/assessment validation, upstream failure, separation from /api/followup, WAV metadata/silence/truncation, multipart file delivery, and response-contract errors. They use synthetic fixtures and mocked upstream requests. No commands, tests, builds, or emulator were run. No dependency installation is required for this change.
-
-Device checks: record an English sentence and a silent clip; inspect only the aggregate diagnostics; test microphone denial and interruption; ensure typed edits survive failed/empty transcription. For refinement, save an answer offline, restart and reopen the visit, submit it, answer the next question, and check that earlier Q&A/revisions remain and no extra photo visit was created. Retry a failed update and confirm the pending turn is reused.
-
-## Optional case-summary sharing — 29 October 2026
-
-The saved-case share action now opens a review modal before any native share call. The summary includes optional location and stage, all saved visits and observations, clarification questions/answers, and the latest saved advice labelled by visit. Older guidance remains labelled when the newest note is offline. Text is selectable for manual copying. Share failures preserve the review and offer retry; no delivery confirmation is claimed.
-
-The installed React Native 0.88 Share API exposes text sharing on Android; local URL sharing is iOS-only. Android therefore shares the complete text summary without a photo and says so before sharing. No attachment dependency, backend upload, schema change, or AI request was added. `caseSharing.ts` provides the pure summary builder and injectable native-share adapter.
-
-Verification: shared web/Android fixture tests passed, including missing fields, clarification history, Hausa parity, literal text, native text payload, dismissal, and rejection. Native modal wiring/selectable fallback was checked statically. The installed TypeScript compiler API returned no diagnostics with no emit. Actual Android share-sheet launch, long-press copy, cancellation, layout, and receiving-app text remain device checks; no emulator, build, or shell command was run.
-
-## Save and retry analysis — 29 October 2026
-
-Save field note now writes a pending visit with location/stage/notes and an app-private photo before any requested analysis. Cases without advice show **Pending analysis** in the saved casebook and offer **Retry analysis**; retry uses the stored photo without returning to the picker. Existing visits without status metadata also appear pending. Analysis merges into the same visit in SQLite JSON; no schema migration is needed.
-
-The synchronous operation gate covers both photo-copy/save and analysis, preventing rapid duplicate taps before React rerenders. Only an explicit analysis/retry action uploads. Connection/timeouts/interrupted responses remain pending; invalid input/unreadable photos and service/configuration errors show needs-attention messages. A valid assessment is required for completion. Photo comparison still uses the preceding visit and clarification history remains unchanged.
-
-Seven Android test groups execute the actual save/retry handlers and analysis helper against simulated SQLite JSON, private-photo I/O and HTTP. Offline/reload, same-visit success, failure classification, duplicate taps, initial-request failure, and comparison/history checks passed. TypeScript compiler API: no diagnostics, no emit. Physical storage, background interruption/process death, native UI and real-network behavior remain device checks; no build, shell command or emulator was run.
-
-## Action checklist and local recheck reminders — 30 October 2026
-
-Use **Checklist / reminder** on a saved visit to open its locally saved actions. Save the existing advice steps once, mark To do/Done/Skipped, add optional short notes, then Save progress. The snapshot retains the exact advice wording even after later analysis. The case’s reminder accepts a local date/time as YYYY-MM-DD HH:mm; Set/change and Dismiss are explicit farmer actions. Due cases appear first and link to photo follow-up on that same case, with no upload or new visit until the farmer explicitly saves/requests analysis.
-
-State is stored in existing SQLite JSON records using additive optional fields; existing records need no schema migration. caseActions.ts holds validation/state helpers and CaseActionPanel.tsx provides the offline controls. Local saves re-read the current case and are guarded against concurrent UI mutations.
-
-expo-notifications is absent from the installed dependencies, so reminders are in-app only, with no permission prompt or closed-app OS alert. The UI explains this. Denied notification permission cannot affect this implementation because it never requests or depends on that permission. No new dependency is required.
-
-New fixture tests exercise the actual local-save handler with serialized records plus date/due logic, saved wording/progress, same-case follow-up and safe text rendering. Full checks: 32 test groups passed across web/checklist/Android/sharing suites; TypeScript compiler API returned zero diagnostics with no emit. Real SQLite restart durability, local-date input usability, foreground/resume refresh and Android layout remain device checks. No native notification-permission/delivery test, build or emulator run was performed.
+No Android screenshots are bundled in the project-owned source tree. A fresh combined release smoke test and reliable voice transcription remain outstanding; SAM 3.1, closed-app notifications, photo attachments in native sharing and Android print export are not implemented. There is no backend case backup or cross-device sync. The [build log](../HACKATHON_BUILD_LOG.md) contains dated hackathon contributions and test evidence; older scaffold and [Android plan](../ANDROID_APP_PLAN.md) entries are historical planning, not current completion or verification claims.
