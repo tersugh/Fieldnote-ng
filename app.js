@@ -28,6 +28,7 @@ let displayedCase = null;
 let displayedVisit = null;
 let refineBusy = false;
 let visitBusy = false;
+let caseActionBusy = false;
 let savedPreviewUrl = null;
 let draftWrites = Promise.resolve();
 let draftSaveError = null;
@@ -174,7 +175,7 @@ function applyLanguage(nextLanguage) {
 }
 
 document.querySelectorAll('[data-language]').forEach((button) => button.addEventListener('click', () => {
-  if (refineBusy || visitBusy) return;
+  if (refineBusy || visitBusy || caseActionBusy) return;
   cancelRecording();
   applyLanguage(button.dataset.language);
 }));
@@ -321,9 +322,9 @@ cropSelect.addEventListener('change', () => {
 });
 
 photoInput.addEventListener('change', async () => {
-  if (refineBusy || visitBusy) return;
+  if (refineBusy || visitBusy || caseActionBusy) return;
   await draftWrites;
-  if (draftSaveError || refineBusy || visitBusy) return;
+  if (draftSaveError || refineBusy || visitBusy || caseActionBusy) return;
   const file = photoInput.files?.[0];
   if (!file) return;
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > MAX_BYTES) {
@@ -343,7 +344,7 @@ document.querySelector('#drop-zone').addEventListener('dragover', (event) => { e
 document.querySelector('#drop-zone').addEventListener('dragleave', (event) => { event.currentTarget.classList.remove('dragover'); });
 document.querySelector('#drop-zone').addEventListener('drop', (event) => {
   event.preventDefault(); event.currentTarget.classList.remove('dragover');
-  if (refineBusy || visitBusy) return;
+  if (refineBusy || visitBusy || caseActionBusy) return;
   const file = event.dataTransfer.files?.[0];
   if (!file) return;
   const transfer = new DataTransfer(); transfer.items.add(file); photoInput.files = transfer.files;
@@ -357,7 +358,7 @@ form.addEventListener('submit', (event) => {
 document.querySelector('#save-local').addEventListener('click', () => saveWebVisit(false));
 
 async function saveWebVisit(sendNow) {
-  if (refineBusy || visitBusy) return;
+  if (refineBusy || visitBusy || caseActionBusy) return;
   const file = photoInput.files?.[0];
   const crop = cropSelect.value === 'Other' ? otherCrop.value.trim() : cropSelect.value;
   if (!crop || !file || !symptoms.value.trim()) return showError(language === 'ha' ? 'Zaɓi amfanin gona da hoto, sannan rubuta alamun.' : 'Choose a crop and photo, and describe the symptoms.');
@@ -463,7 +464,7 @@ async function analyzeSavedWebVisit(caseId, index) {
 }
 
 async function retryWebAnalysis(caseId, index) {
-  if (refineBusy || visitBusy) return;
+  if (refineBusy || visitBusy || caseActionBusy) return;
   setLoading(true);
   cancelRecording();
   try {
@@ -477,7 +478,7 @@ async function retryWebAnalysis(caseId, index) {
 newCaseButton.addEventListener('click', startNewCase);
 casebookList.addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-action]');
-  if (!button || refineBusy || visitBusy) return;
+  if (!button || refineBusy || visitBusy || caseActionBusy) return;
   if (button.dataset.action === 'retry') return retryWebAnalysis(button.dataset.caseId, Number(button.dataset.visitIndex));
   cancelRecording();
   await draftWrites;
@@ -498,6 +499,10 @@ casebookList.addEventListener('click', async (event) => {
 });
 
 renderCasebook();
+
+// Local clock checks only: no notification service or network retry.
+window.setInterval?.(() => { if (!visitBusy && !refineBusy && !caseActionBusy) void renderCasebook(); }, 30000);
+document.addEventListener?.('visibilitychange', () => { if (!document.hidden && !visitBusy && !refineBusy && !caseActionBusy) void renderCasebook(); });
 
 function readAsDataUrl(file) {
   return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('Could not read this image.')); reader.readAsDataURL(file); });
@@ -528,7 +533,7 @@ const getCase = (id) => caseStoreRequest('get', id);
 const putCase = (record) => caseStoreRequest('put', record);
 async function renderCasebook() {
   try {
-    const records = (await caseStoreRequest('getAll')).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const records = (await caseStoreRequest('getAll')).sort((a, b) => Number(recheckDue(b.recheckAt)) - Number(recheckDue(a.recheckAt)) || b.updatedAt.localeCompare(a.updatedAt));
     if (!records.length) {
       casebookList.innerHTML = `<p class="casebook-empty">${escapeHtml(tr('casebookEmpty'))}</p>`;
       return;
@@ -542,14 +547,124 @@ async function renderCasebook() {
         <button type="button" data-action="advice" data-case-id="${escapeHtml(record.id)}" data-visit-index="${index}">${escapeHtml(visit.assessment ? tr('openAdvice') : (language === 'ha' ? 'Duba bayanan da aka ajiye' : 'View saved details'))}</button>
         ${!visit.assessment ? `<button type="button" data-action="retry" data-case-id="${escapeHtml(record.id)}" data-visit-index="${index}">${language === 'ha' ? 'Sake neman tantancewa' : 'Retry analysis'}</button>` : ''}</div>`).join('');
       const shareAction = `<button type="button" data-action="share" data-case-id="${escapeHtml(record.id)}">${tr('share')}</button>`;
-      return `<article class="case-card"><div class="case-card-top"><div><span class="case-crop">${escapeHtml(cropName)}</span><span class="case-location">${record.location ? escapeHtml(record.location) : tr('noLocation')}</span></div><span class="case-count">${record.observations.length} ${record.observations.length === 1 ? tr('visit') : tr('visits')}</span></div><p class="case-excerpt">${escapeHtml(excerpt)}</p><div class="case-card-foot"><span>${tr('updated')} ${escapeHtml(formatDate(record.updatedAt))}</span><div class="case-actions">${adviceActions}${shareAction}<button type="button" data-action="print" data-case-id="${escapeHtml(record.id)}">${tr('print')}</button><button type="button" class="case-continue" data-action="continue" data-case-id="${escapeHtml(record.id)}">${tr('addFollowup')} ↗</button></div></div></article>`;
+      return `<article class="case-card">${record.recheckAt ? `<div class="recheck-notice"><strong>${recheckDue(record.recheckAt) ? (language === 'ha' ? 'Lokacin sake dubawa ya yi' : 'Recheck due') : (language === 'ha' ? 'Tunatarwar sake dubawa' : 'Recheck reminder')}</strong> · ${escapeHtml(formatDate(record.recheckAt))}<button type="button" data-action="continue" data-case-id="${escapeHtml(record.id)}">${language === 'ha' ? 'Fara ziyara da sabon hoto a wannan rahoto' : 'Start photo follow-up on this case'}</button></div>` : ''}<div class="case-card-top"><div><span class="case-crop">${escapeHtml(cropName)}</span><span class="case-location">${record.location ? escapeHtml(record.location) : tr('noLocation')}</span></div><span class="case-count">${record.observations.length} ${record.observations.length === 1 ? tr('visit') : tr('visits')}</span></div><p class="case-excerpt">${escapeHtml(excerpt)}</p><div class="case-card-foot"><span>${tr('updated')} ${escapeHtml(formatDate(record.updatedAt))}</span><div class="case-actions">${adviceActions}${shareAction}<button type="button" data-action="print" data-case-id="${escapeHtml(record.id)}">${tr('print')}</button><button type="button" class="case-continue" data-action="continue" data-case-id="${escapeHtml(record.id)}">${tr('addFollowup')} ↗</button></div></div></article>`;
     }).join('');
-    if (visitBusy || refineBusy) casebookList.querySelectorAll('button').forEach(button => { button.disabled = true; });
+    if (visitBusy || refineBusy || caseActionBusy) casebookList.querySelectorAll('button').forEach(button => { button.disabled = true; });
   } catch (error) {
     casebookList.innerHTML = `<p class="casebook-empty">${escapeHtml(error.message)}</p>`;
   }
 }
 function formatDate(value) { return new Intl.DateTimeFormat(language==='ha'?'ha-NG':'en-NG', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)); }
+function makeChecklist(steps, now = new Date().toISOString()) {
+    return { savedAt: now, items: steps.map(text => ({ text, state: 'todo', note: '' })) };
+}
+function updateChecklist(saved, progress) {
+    if (saved.items.length !== progress.length)
+        throw new Error('The checklist changed. Reopen it before saving.');
+    return { ...saved, items: saved.items.map((item, index) => {
+            const change = progress[index];
+            if (!['todo', 'done', 'skipped'].includes(change.state) || change.note.length > 300)
+                throw new Error('Choose a valid status and keep each note within 300 characters.');
+            return { ...item, state: change.state, note: change.note };
+        }) };
+}
+// Parse local wall-clock input strictly, rejecting invalid dates and DST gaps.
+function parseRecheck(value) {
+    const parts = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})$/.exec(value);
+    if (!parts)
+        throw new Error('Enter a local date and time as YYYY-MM-DD HH:mm.');
+    const [year, month, day, hour, minute] = parts.slice(1).map(Number);
+    const date = new Date(year, month - 1, day, hour, minute);
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day || date.getHours() !== hour || date.getMinutes() !== minute)
+        throw new Error('Enter a valid local date and time.');
+    return date.toISOString();
+}
+function localRecheck(value) {
+    if (!value)
+        return '';
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime()))
+        return '';
+    const pad = (number) => String(number).padStart(2, '0');
+    return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+}
+function recheckDue(value, now = Date.now()) {
+    return !!value && Number.isFinite(Date.parse(value)) && Date.parse(value) <= now;
+}
+
+async function saveWebCaseAction(kind) {
+  if (caseActionBusy || visitBusy || refineBusy || !displayedCase) return;
+  caseActionBusy = true;
+  const caseId = displayedCase.id, index = displayedVisit;
+  const panel = document.querySelector('#case-action-panel');
+  const status = document.querySelector('#action-status');
+  panel.querySelectorAll('button, input, select, textarea').forEach(element => { element.disabled = true; });
+  const otherControls = '#clarification-answer, #answer-voice, #update-advice, #save-local, #submit-button, [data-language], #new-case-button, #photo, #voice-button, #casebook-list button';
+  document.querySelectorAll(otherControls).forEach(element => { element.disabled = true; });
+  try {
+    await draftWrites;
+    if (draftSaveError) throw new Error(tr('draftFailed'));
+    const record = await getCase(caseId);
+    const visit = record?.observations[index];
+    if (!visit) throw new Error('The saved visit could not be opened.');
+    if (kind === 'create' && !visit.checklist) visit.checklist = makeChecklist(visit.assessment?.next_steps || []);
+    if (kind === 'progress') {
+      if (!visit.checklist) throw new Error('Save the checklist first.');
+      const progress = visit.checklist.items.map((item, i) => ({
+        state: document.querySelector('#step-state-' + i).value, note: document.querySelector('#step-note-' + i).value,
+      }));
+      visit.checklist = updateChecklist(visit.checklist, progress);
+    }
+    if (kind === 'reminder') record.recheckAt = parseRecheck(document.querySelector('#recheck-time').value);
+    if (kind === 'dismiss') record.recheckAt = null;
+    await putCase(record);
+    if (activeCaseId === caseId) activeCaseRecord = record;
+    displayedCase = record;
+    if (kind === 'create') renderCaseActions();
+    else {
+      document.querySelector('#dismiss-recheck').hidden = !record.recheckAt;
+      document.querySelector('#recheck-time').value = localRecheck(record.recheckAt);
+    }
+    document.querySelector('#action-status').textContent = language === 'ha' ? 'An ajiye a wannan na’ura.' : 'Saved on this device.';
+    await renderCasebook();
+  } catch (error) {
+    status.textContent = error.message || 'Could not save. Your edits are still here.';
+  } finally {
+    caseActionBusy = false;
+    panel.querySelectorAll('button, input, select, textarea').forEach(element => { element.disabled = false; });
+    document.querySelectorAll(otherControls).forEach(element => { element.disabled = false; });
+    if (language === 'ha') document.querySelectorAll('#voice-button, #answer-voice').forEach(element => { element.disabled = true; });
+  }
+}
+
+function renderCaseActions() {
+  const panel = document.querySelector('#case-action-panel');
+  const visit = displayedCase?.observations[displayedVisit];
+  panel.hidden = !visit;
+  if (!visit) return;
+  const label = (en, ha) => language === 'ha' ? ha : en;
+  const checklist = visit.checklist;
+  panel.innerHTML = `<h3>${label('Action checklist', 'Jerin ayyuka')}</h3>
+    <p>${label('These are the saved advice steps, unchanged. Save progress after editing. No AI request is made.', 'Waɗannan matakan shawara ne da aka ajiye, ba su canza ba. Ajiye ci gaba bayan gyara.')}</p>
+    ${!checklist && visit.assessment?.next_steps?.length ? `<button type="button" id="create-checklist">${label('Save these steps as a checklist', 'Ajiye waɗannan matakai a jeri')}</button>` : ''}
+    ${checklist ? `<ol>${checklist.items.map((item, index) => `<li><p>${escapeHtml(item.text)}</p>
+      <label for="step-state-${index}">${label('Status', 'Matsayi')}</label>
+      <select id="step-state-${index}">${['todo', 'done', 'skipped'].map(state => `<option value="${state}" ${item.state === state ? 'selected' : ''}>${state === 'todo' ? label('To do', 'A yi') : state === 'done' ? label('Done', 'An yi') : label('Skipped', 'An tsallake')}</option>`).join('')}</select>
+      <label for="step-note-${index}">${label('Optional note (300 characters)', 'Bayani na zaɓi (haruffa 300)')}</label>
+      <textarea id="step-note-${index}" maxlength="300" rows="2">${escapeHtml(item.note)}</textarea></li>`).join('')}</ol>
+      <button type="button" id="save-progress">${label('Save progress', 'Ajiye ci gaba')}</button>` : ''}
+    <h3>${label('Recheck reminder', 'Tunatarwar sake dubawa')}</h3>
+    <p>${label('Choose a local date and time. Reminders appear here when this app is open; no push notifications or automatic uploads.', 'Zaɓi kwanan wata da lokacin yankinka. Tunatarwa tana bayyana a nan yayin da manhaja take buɗe; babu aikawa ta atomatik.')}</p>
+    <label for="recheck-time">${label('Local date and time', 'Kwanan wata da lokaci')}</label>
+    <input id="recheck-time" type="datetime-local" value="${escapeHtml(localRecheck(displayedCase.recheckAt))}">
+    <button type="button" id="save-recheck">${label('Set / change reminder', 'Saita / canza tunatarwa')}</button>
+    <button type="button" id="dismiss-recheck" ${displayedCase.recheckAt ? '' : 'hidden'}>${label('Dismiss reminder', 'Soke tunatarwa')}</button>
+    <p id="action-status" role="status"></p>`;
+  panel.querySelector('#create-checklist')?.addEventListener('click', () => saveWebCaseAction('create'));
+  panel.querySelector('#save-progress')?.addEventListener('click', () => saveWebCaseAction('progress'));
+  panel.querySelector('#save-recheck').addEventListener('click', () => saveWebCaseAction('reminder'));
+  panel.querySelector('#dismiss-recheck').addEventListener('click', () => saveWebCaseAction('dismiss'));
+}
 function buildCaseSummary(record, language = 'en') {
   const ha = language === 'ha';
   const label = (en, translated) => ha ? translated : en;
@@ -749,7 +864,7 @@ function clearPhotoInput() {
   uploadHint.textContent = tr('photoHint');
 }
 async function startNewCase() {
-  if (refineBusy || visitBusy) return;
+  if (refineBusy || visitBusy || caseActionBusy) return;
   cancelRecording();
   await draftWrites;
   if (draftSaveError) return;
@@ -798,6 +913,7 @@ function clearResult() {
   displayedCase = null;
   displayedVisit = null;
   clarificationPanel.hidden = true;
+  document.querySelector('#case-action-panel').hidden = true;
   errorState.hidden = true; analysisResult.hidden = true; emptyState.hidden = false;
 }
 function localizeError(message) {
@@ -840,6 +956,7 @@ function showSavedAdvice(record, index, bringIntoView = true) {
 function renderSavedAdvice() {
   const visit = displayedCase?.observations[displayedVisit];
   if (!visit) return;
+  renderCaseActions();
   if (savedPreviewUrl) URL.revokeObjectURL(savedPreviewUrl);
   savedPreviewUrl = null;
   if (!visit.assessment) {
@@ -942,7 +1059,7 @@ function validRevisedAssessment(value) {
 
 async function updateAdvice(event) {
   event.preventDefault();
-  if (refineBusy || visitBusy || !displayedCase) return;
+  if (refineBusy || visitBusy || caseActionBusy || !displayedCase) return;
   const field = clarificationPanel.querySelector('#clarification-answer');
   const answer = field.value.trim();
   if (!answer) { clarificationStatus(tr('answerRequired'), true); field.focus(); return; }

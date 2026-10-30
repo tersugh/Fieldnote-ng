@@ -17,6 +17,12 @@ body.printing-case #print-report{display:block}
 .clarification-panel{border-top:1px solid var(--line);margin-top:16px;padding-top:16px;font-size:12px;color:var(--ink)}
 .result-card [hidden]{display:none!important}
 .result-card{scroll-margin-top:24px}
+.case-action-panel{border-top:1px solid #dfe5dc;margin-top:18px;padding-top:14px;font-size:12px;line-height:1.6}
+.case-action-panel label{display:block;margin:10px 0 4px}
+.case-action-panel li{margin-bottom:18px;white-space:pre-wrap;overflow-wrap:anywhere}
+.case-action-panel button{min-height:44px;padding:10px;margin:6px 4px 6px 0;border:1px solid #dce3da;border-radius:8px;color:#214e37;background:#edf3ea;cursor:pointer}
+.case-action-panel input{padding:10px;max-width:100%}
+.recheck-notice{padding:12px;background:#f5f8f2;border-left:3px solid #59775d;margin-bottom:12px}
 .share-review{width:min(640px,calc(100% - 32px));max-height:90vh;overflow:auto;border:1px solid #dfe5dc;border-radius:18px;padding:24px;background:var(--paper);color:var(--ink)}
 .share-review::backdrop{background:rgba(30,46,37,.4)}
 .share-review p,.share-review label{font-size:13px;line-height:1.6}

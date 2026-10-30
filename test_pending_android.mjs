@@ -18,7 +18,7 @@ function harness(store = new Map(), files = new Map()) {
   const calls = [], events = [];
   let sequence = 0;
   const context = {
-    locked:false, crop:'Maize', symptoms:'Yellow leaves', stage:'Flowering', location:'Test area',
+    locked:false, actionSaving:{current:false}, crop:'Maize', symptoms:'Yellow leaves', stage:'Flowering', location:'Test area',
     photo:{uri:'cache:fixture',mimeType:'image/jpeg'}, activeCase:null, language:'en', API_BASE_URL:'https://fixture.invalid',
     t:{cropRequired:'Crop required',photoRequired:'Photo required',error:'Error'},
     Alert:{alert:()=>assert.fail('Unexpected alert')}, analysisGate:createOperationGate(), analyzeSavedVisit, analysisStatus,

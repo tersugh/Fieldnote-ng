@@ -136,3 +136,11 @@
 - Both platforms distinguish connection/timeout/interrupted-response failures from input/configuration/model errors, stop loading on completion/failure, validate returned advice, and never automatically upload or retry. Existing clarification and photo-visit history are retained.
 - Expanded test_web_panel.mjs and added test_pending_android.mjs. Results: 10 web, 7 Android, and 7 sharing test groups passed; installed Android TypeScript compiler API returned no diagnostics with no emit. Tests use simulated DOM/storage/photo/network calls. Real IndexedDB/SQLite durability, restarts, live APIs, network interruptions and offline web-shell availability remain unverified.
 - Updated web/mobile docs. No backend storage, environment/secret edits, dependency changes, shell commands, builds, or emulator runs.
+
+## Offline checklist and farmer-controlled recheck reminders — 30 October 2026
+
+- Codex added per-visit checklist snapshots of existing advice, with unchanged wording, To do/Done/Skipped states and short notes. Explicit local saves retain progress independently of later AI guidance and preserve visit/clarification history.
+- Added case-level local recheck times, set/change/dismiss controls, due-first casebook ordering and same-case photo-follow-up links. Due checks run locally while open/on foreground return; no automatic photo visit, upload, AI call or backend reminder service.
+- Web uses IndexedDB; Android uses existing SQLite JSON. Installed Android dependencies do not include expo-notifications, so the UI clearly provides in-app reminders only with no OS permission request or closed-app alert. No notification dependency was installed.
+- Added mobile/caseActions.ts, mobile/CaseActionPanel.tsx and test_case_actions.mjs; updated web/Android integration, regression harnesses and documentation.
+- Verification: 8 new action/reminder test groups plus 24 existing regression groups passed through direct JavaScript execution. Installed Android TypeScript compiler API: zero diagnostics, no emit. Tests use simulated local stores/DOM/platform calls; real browser/Android restart durability, timers, date controls and layout remain manual checks. Native notification permission/delivery was not implemented/tested. No shell commands, builds, emulator runs, backend/secret edits or dependency changes.

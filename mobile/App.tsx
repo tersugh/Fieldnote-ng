@@ -26,6 +26,8 @@ import { useAudioStream, requestRecordingPermissionsAsync, setAudioModeAsync } f
 import { prepareTranscriptionWav } from './voice';
 import { buildCaseSummary, shareCaseSummary } from './caseSharing';
 import { analyzeSavedVisit, analysisStatus, createOperationGate, type AnalysisState } from './analysis';
+import { makeChecklist, updateChecklist, parseRecheck, recheckDue, type Checklist } from './caseActions';
+import { CaseActions, type ActionChange } from './CaseActionPanel';
 
 declare const process: { env: { EXPO_PUBLIC_API_BASE_URL?: string } };
 
@@ -48,6 +50,7 @@ type RefinementTurn = {
 };
 
 type Observation = {
+  checklist?: Checklist;
   id: string;
   date: string;
   stage: string;
@@ -61,6 +64,7 @@ type Observation = {
 };
 
 type CropCase = {
+  recheckAt?: string | null;
   id: string;
   crop: string;
   location: string;
@@ -313,6 +317,14 @@ export default function App() {
   const [symptoms, setSymptoms] = useState('');
   const [photo, setPhoto] = useState<PickedPhoto | null>(null);
   const [busy, setBusy] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const actionSaving = useRef(false);
+  const [reminderClock, setReminderClock] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setReminderClock(Date.now()), 30000);
+    const subscription = AppState.addEventListener('change', state => { if (state === 'active') setReminderClock(Date.now()); });
+    return () => { clearInterval(timer); subscription.remove(); };
+  }, []);
   const analysisGate = useMemo(() => createOperationGate(), []);
   const [status, setStatus] = useState('');
   const [selectedObservationId, setSelectedObservationId] = useState<string | null>(null);
@@ -338,7 +350,7 @@ export default function App() {
   const scroll = useRef<ScrollViewInstance | null>(null);
   const w = webCopy[language];
   const voiceActive = ['permission', 'recording', 'transcribing'].includes(voiceState);
-  const locked = busy || photoBusy || voiceActive;
+  const locked = busy || photoBusy || voiceActive || actionBusy;
 
   function clearVoiceTimers() {
     if (voiceTimer.current) clearTimeout(voiceTimer.current);
@@ -508,7 +520,7 @@ export default function App() {
   const latestAssessment = resultObservation?.assessment;
 
   function startNewCase() {
-    if (locked) return;
+    if (actionSaving.current || locked) return;
     setVoiceDiagnostics('');
     setCropChoice('');
     setVoiceState('idle');
@@ -526,7 +538,7 @@ export default function App() {
   }
 
   function continueCase(record: CropCase, observationId?: string) {
-    if (locked) return;
+    if (actionSaving.current || locked) return;
     setVoiceDiagnostics('');
     setCropChoice(CROPS.includes(record.crop) ? record.crop : 'Other');
     setVoiceState('idle');
@@ -546,7 +558,7 @@ export default function App() {
   }
 
   async function choosePhoto(useCamera: boolean) {
-    if (locked) return;
+    if (actionSaving.current || locked) return;
     setPhotoBusy(true);
     let context: ImageManipulatorContext | undefined;
     let rendered: ImageRef | undefined;
@@ -633,7 +645,7 @@ export default function App() {
   }
 
   async function saveFieldNote(requestMetaReview: boolean) {
-    if (locked) return;
+    if (actionSaving.current || locked) return;
     if (!crop.trim()) return Alert.alert(t.cropRequired);
     if (!photo || !symptoms.trim()) return Alert.alert(t.photoRequired);
     const selectedPhoto = photo;
@@ -682,7 +694,7 @@ export default function App() {
   }
 
   async function requestReview(record: CropCase, observationId?: string) {
-    if (locked) return;
+    if (actionSaving.current || locked) return;
     const id = observationId || record.observations.find(item => !item.assessment)?.id;
     if (!id) return;
     return analysisGate.run(async () => {
@@ -694,7 +706,7 @@ export default function App() {
   }
 
   async function updateAdvice(sendToMeta: boolean) {
-    if (locked || refineSubmitting.current || !activeCase || !resultObservation?.assessment) return;
+    if (actionSaving.current || locked || refineSubmitting.current || !activeCase || !resultObservation?.assessment) return;
     const previousAssessment = resultObservation.assessment;
     const question = resultObservation.assessment.follow_up_question?.trim();
     const answer = refineAnswer.trim();
@@ -768,6 +780,29 @@ export default function App() {
       refineSubmitting.current = false;
       setBusy(false);
     }
+  }
+
+  async function saveCaseAction(change: ActionChange) {
+    if (locked || actionSaving.current || !activeCase || !resultObservation) throw new Error('Another operation is in progress. Try again.');
+    actionSaving.current = true;
+    setActionBusy(true);
+    const caseId = activeCase.id;
+    const visitId = resultObservation.id;
+    try {
+      const record = await loadSavedCase(caseId);
+      const visit = record.observations.find(item => item.id === visitId);
+      if (!visit) throw new Error('The saved visit could not be opened.');
+      if (change.kind === 'create' && !visit.checklist) visit.checklist = makeChecklist(visit.assessment?.next_steps || []);
+      if (change.kind === 'progress') {
+        if (!visit.checklist) throw new Error('Save the checklist first.');
+        visit.checklist = updateChecklist(visit.checklist, change.progress);
+      }
+      if (change.kind === 'reminder') record.recheckAt = change.value === null ? null : parseRecheck(change.value);
+      await persistCase(record);
+      setActiveCase(record);
+      setCases(current => current.map(item => item.id === record.id ? record : item));
+      setReminderClock(Date.now());
+    } finally { actionSaving.current = false; setActionBusy(false); }
   }
 
   function shareCaseWithWorker(record: CropCase) {
@@ -881,6 +916,7 @@ export default function App() {
             </View>}
             <Text style={styles.disclaimer}>{w.disclaimerResult}</Text>
           </>}
+          {activeCase && resultObservation && <CaseActions key={activeCase.id + ':' + resultObservation.id} checklist={resultObservation.checklist} hasSteps={!!resultObservation.assessment?.next_steps.length} recheckAt={activeCase.recheckAt} disabled={locked} language={language} onSave={saveCaseAction} />}
           <Text style={styles.resultFoot}>f   {w.resultFoot}</Text>
         </View>
 
@@ -888,12 +924,17 @@ export default function App() {
           <Text style={styles.eyebrow}>{w.casebookLabel}</Text><Text style={styles.casebookTitle}>{w.casebookTitle}</Text><Text style={styles.muted}>{w.casebookCopy}</Text>
           <Pressable accessibilityRole="button" disabled={locked} onPress={startNewCase} style={[styles.newCase, locked && styles.disabled]}><Text style={styles.outlineText}>＋  {w.newCase}</Text></Pressable>
           {cases.length === 0 && <Text style={styles.emptyCasebook}>{w.casebookEmpty}</Text>}
-          {cases.map((record) => <View key={record.id} style={styles.card}>
+          {[...cases].sort((a, b) => Number(recheckDue(b.recheckAt, reminderClock)) - Number(recheckDue(a.recheckAt, reminderClock))).map((record) => <View key={record.id} style={styles.card}>
+            {!!record.recheckAt && <View style={styles.status}>
+              <Text style={styles.body}>{recheckDue(record.recheckAt, reminderClock) ? (language === 'ha' ? 'Lokacin sake duba amfanin gona ya yi' : 'Recheck due') : (language === 'ha' ? 'Tunatarwar sake dubawa' : 'Recheck reminder')} · {new Date(record.recheckAt).toLocaleString()}</Text>
+              <Pressable accessibilityRole="button" disabled={locked} onPress={() => continueCase(record)} style={styles.outlineButton}><Text style={styles.outlineText}>{language === 'ha' ? 'Fara ziyara da sabon hoto a wannan rahoto' : 'Start photo follow-up on this case'}</Text></Pressable>
+            </View>}
             <Text style={styles.caseTitle}>{language === 'ha' ? cropNames.ha[record.crop] || record.crop : record.crop}{record.location ? ' · ' + record.location : ''}</Text>
             <Text style={styles.muted}>{record.observations.length} {w.visits} · {w.updated} {new Date(record.updatedAt).toLocaleDateString()}</Text>
             {record.observations.map((visit, index) => <View key={visit.id} style={styles.visit}>
               <Image source={{ uri: visit.photoUri }} style={styles.thumbnail} accessibilityLabel={w.visit + ' ' + (index + 1)} />
               <View style={styles.flex}><Text style={styles.visitDate}>{w.visit} {index + 1} · {new Date(visit.date).toLocaleDateString()}</Text><Text style={styles.body}>{visit.symptoms}</Text>
+                <Pressable accessibilityRole="button" disabled={locked} onPress={() => continueCase(record, visit.id)} style={styles.reviewButton}><Text style={styles.reviewText}>{language === 'ha' ? 'Jerin ayyuka / tunatarwa' : 'Checklist / reminder'}</Text></Pressable>
                 {visit.assessment && <><Text style={styles.muted}>{visit.assessment.visual_observations}</Text><Pressable accessibilityRole="button" disabled={locked} onPress={() => continueCase(record, visit.id)} style={[styles.reviewButton, locked && styles.disabled]}><Text style={styles.reviewText}>{language === 'ha' ? 'Duba shawara / amsa tambaya' : 'View advice / answer question'}</Text></Pressable></>}
                 {!visit.assessment && <>
                   {!!visit.stage && <Text style={styles.body}>{visit.stage}</Text>}

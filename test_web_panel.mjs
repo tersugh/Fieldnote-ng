@@ -24,6 +24,7 @@ export async function webHarness(stored = new Map()) {
       setAttribute() {}, removeAttribute() {}, reset() {},
       focus() { this.focused = true; }, scrollIntoView() { this.scrolls = (this.scrolls || 0) + 1; },
       querySelector: node,
+      querySelectorAll: () => [],
       set innerHTML(value) {
         this.markup = value;
         if (id === '#clarification-panel') {
