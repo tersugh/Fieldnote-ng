@@ -91,7 +91,7 @@ assert.equal(JSON.parse(saved).observations[0].checklist.items[0].note,'Checked'
 const before=saved;
 await assert.rejects(ctx.saveCaseAction({kind:'reminder',value:'invalid'}));
 assert.equal(saved,before);
-const followupContext={locked:false,actionSaving:{current:false},CROPS:['Maize'],scroll:{current:{scrollTo(){}}},...Object.fromEntries(['setVoiceDiagnostics','setCropChoice','setVoiceState','setVoiceMessage','setStatus','setSelectedObservationId','setRefineAnswer','setCrop','setLocation','setStage','setSymptoms','setPhoto'].map(name=>[name,()=>{}])),setActiveCase:value=>{followupContext.activeCase=value;}};
+const followupContext={locked:false,actionSaving:{current:false},sectionNavigation:{cancel(){}},CROPS:['Maize'],scroll:{current:{scrollTo(){}}},...Object.fromEntries(['setVoiceDiagnostics','setCropChoice','setVoiceState','setVoiceMessage','setStatus','setSelectedObservationId','setRefineAnswer','setCrop','setLocation','setStage','setSymptoms','setPhoto'].map(name=>[name,()=>{}])),setActiveCase:value=>{followupContext.activeCase=value;}};
 runInNewContext(compile(app.slice(app.indexOf('  function continueCase'),app.indexOf('  async function choosePhoto'))),followupContext);
 followupContext.continueCase(JSON.parse(saved));
 assert.equal(followupContext.activeCase.id,record.id);

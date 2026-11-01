@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -28,6 +28,7 @@ import { buildCaseSummary, shareCaseSummary } from './caseSharing';
 import { analyzeSavedVisit, analysisStatus, createOperationGate, type AnalysisState } from './analysis';
 import { makeChecklist, updateChecklist, parseRecheck, recheckDue, type Checklist } from './caseActions';
 import { CaseActions, type ActionChange } from './CaseActionPanel';
+import { createSectionNavigation, type CaseSection } from './sectionNavigation';
 
 declare const process: { env: { EXPO_PUBLIC_API_BASE_URL?: string } };
 
@@ -348,6 +349,24 @@ export default function App() {
   const voiceClock = useRef<ReturnType<typeof setInterval> | null>(null);
   const voiceRequest = useRef<AbortController | null>(null);
   const scroll = useRef<ScrollViewInstance | null>(null);
+  const contentRef = useRef<ComponentRef<typeof View> | null>(null);
+  const adviceRef = useRef<ComponentRef<typeof View> | null>(null);
+  const questionRef = useRef<ComponentRef<typeof View> | null>(null);
+  const checklistRef = useRef<ComponentRef<typeof View> | null>(null);
+  const reminderRef = useRef<ComponentRef<typeof View> | null>(null);
+  const [sectionRequest, setSectionRequest] = useState<{ section: CaseSection; token: number }>();
+  const sectionNavigation = useMemo(() => createSectionNavigation(
+    callback => { requestAnimationFrame(callback); },
+    (section, ready) => {
+      const target = { advice: adviceRef, question: questionRef, checklist: checklistRef, reminder: reminderRef }[section].current;
+      if (target && contentRef.current) target.measureLayout(contentRef.current, (_x, y) => ready(y), () => {});
+    },
+    y => scroll.current?.scrollTo({ y, animated: true }),
+  ), []);
+  useEffect(() => {
+    if (sectionRequest) sectionNavigation.request(sectionRequest.section);
+    return () => sectionNavigation.cancel();
+  }, [sectionRequest, sectionNavigation]);
   const w = webCopy[language];
   const voiceActive = ['permission', 'recording', 'transcribing'].includes(voiceState);
   const locked = busy || photoBusy || voiceActive || actionBusy;
@@ -521,6 +540,7 @@ export default function App() {
 
   function startNewCase() {
     if (actionSaving.current || locked) return;
+    sectionNavigation.cancel();
     setVoiceDiagnostics('');
     setCropChoice('');
     setVoiceState('idle');
@@ -539,6 +559,7 @@ export default function App() {
 
   function continueCase(record: CropCase, observationId?: string) {
     if (actionSaving.current || locked) return;
+    sectionNavigation.cancel();
     setVoiceDiagnostics('');
     setCropChoice(CROPS.includes(record.crop) ? record.crop : 'Other');
     setVoiceState('idle');
@@ -782,6 +803,27 @@ export default function App() {
     }
   }
 
+  function openCaseSection(record: CropCase, observationId: string, section: CaseSection) {
+    if (actionSaving.current || locked) return;
+    const visit = record.observations.find(item => item.id === observationId);
+    if (!visit) return;
+    // Opening advice/actions is not preparing a new photo visit.
+    setActiveCase(record);
+    setSelectedObservationId(visit.id);
+    if (activeCase?.id !== record.id) {
+      setCropChoice(CROPS.includes(record.crop) ? record.crop : 'Other');
+      setCrop(record.crop);
+      setLocation(record.location);
+      setStage('');
+      setSymptoms('');
+      setPhoto(null);
+    }
+    if (activeCase?.id !== record.id || resultObservation?.id !== visit.id) {
+      setRefineAnswer(visit.refinements?.find(turn => !turn.assessment)?.answer || '');
+    }
+    setSectionRequest(current => ({ section, token: (current?.token || 0) + 1 }));
+  }
+
   async function saveCaseAction(change: ActionChange) {
     if (locked || actionSaving.current || !activeCase || !resultObservation) throw new Error('Another operation is in progress. Try again.');
     actionSaving.current = true;
@@ -828,7 +870,8 @@ export default function App() {
   return (
     <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <StatusBar barStyle="dark-content" />
-      <ScrollView ref={scroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView ref={scroll} keyboardShouldPersistTaps="handled" onContentSizeChange={sectionNavigation.layout}>
+        <View ref={contentRef} style={styles.content} collapsable={false} onLayout={sectionNavigation.layout}>
         <View style={styles.header}>
           <View style={styles.brandRow}><Text style={styles.brandMark}>f</Text><Text style={styles.brand}>fieldnote</Text></View>
           <View style={styles.languageSwitch} accessibilityLabel={w.chooseLanguage}>
@@ -883,7 +926,7 @@ export default function App() {
           <Text style={styles.disclaimer}>{w.disclaimer}</Text>
         </View>
 
-        <View style={[styles.card, styles.resultCard]}>
+        <View ref={adviceRef} collapsable={false} onLayout={sectionNavigation.layout} style={[styles.card, styles.resultCard]}>
           <View style={styles.cardHeading}><View style={styles.flex}><Text style={styles.eyebrow}>{w.resultLabel}</Text><Text style={styles.sectionTitle}>{w.resultTitle}</Text></View><Text style={styles.resultIcon}>↳</Text></View>
           {busy && <View style={styles.loading}><ActivityIndicator color="#214e37" /><View style={styles.flex}><Text style={styles.label}>{w.loadingTitle}</Text><Text style={styles.muted}>{w.loadingCopy}</Text></View></View>}
           {!!status && <Text accessibilityLiveRegion="polite" style={styles.status}>{status}</Text>}
@@ -895,7 +938,7 @@ export default function App() {
             {latestAssessment.possible_causes.map((item, index) => <View key={index} style={styles.finding}><View style={styles.findingHeading}><Text style={[styles.caseTitle, styles.flex]}>{item.name}</Text><Text style={styles.badge}>{item.likelihood === 'low' ? w.low : item.likelihood === 'moderate' ? w.moderate : item.likelihood === 'high' ? w.high : item.likelihood}</Text></View>{!!item.evidence && <Text style={styles.body}>{item.evidence}</Text>}{!!item.what_to_check && <Text style={styles.body}>{w.checks} {item.what_to_check}</Text>}</View>)}
             <Text style={styles.resultHeading}>{w.next}</Text>{latestAssessment.next_steps.map((step, index) => <Text key={index} style={styles.body}>{index + 1}. {step}</Text>)}
             <Text style={styles.resultHeading}>{w.urgency}</Text><Text style={styles.body}>{latestAssessment.urgency || latestAssessment.escalation}</Text>
-            {!!latestAssessment.follow_up_question && <View style={styles.followQuestion}>
+            {!!latestAssessment.follow_up_question && <View ref={questionRef} collapsable={false} onLayout={sectionNavigation.layout} style={styles.followQuestion}>
               <Text style={styles.label}>{w.followQuestion}</Text><Text style={styles.body}>{latestAssessment.follow_up_question}</Text>
               <TextInput accessibilityLabel={language === 'ha' ? 'Amsarka' : 'Your answer'} value={refineAnswer} onChangeText={setRefineAnswer} editable={!busy}
                 placeholder={language === 'ha' ? 'Rubuta amsarka a nan…' : 'Type your answer here…'} placeholderTextColor="#929d93" style={[styles.input, styles.notes]} multiline maxLength={1200} textAlignVertical="top" />
@@ -916,7 +959,7 @@ export default function App() {
             </View>}
             <Text style={styles.disclaimer}>{w.disclaimerResult}</Text>
           </>}
-          {activeCase && resultObservation && <CaseActions key={activeCase.id + ':' + resultObservation.id} checklist={resultObservation.checklist} hasSteps={!!resultObservation.assessment?.next_steps.length} recheckAt={activeCase.recheckAt} disabled={locked} language={language} onSave={saveCaseAction} />}
+          {activeCase && resultObservation && <CaseActions key={activeCase.id + ':' + resultObservation.id} checklist={resultObservation.checklist} hasSteps={!!resultObservation.assessment?.next_steps.length} recheckAt={activeCase.recheckAt} disabled={locked} language={language} onSave={saveCaseAction} openSection={sectionRequest} checklistRef={checklistRef} reminderRef={reminderRef} onLayout={sectionNavigation.layout} />}
           <Text style={styles.resultFoot}>f   {w.resultFoot}</Text>
         </View>
 
@@ -934,8 +977,11 @@ export default function App() {
             {record.observations.map((visit, index) => <View key={visit.id} style={styles.visit}>
               <Image source={{ uri: visit.photoUri }} style={styles.thumbnail} accessibilityLabel={w.visit + ' ' + (index + 1)} />
               <View style={styles.flex}><Text style={styles.visitDate}>{w.visit} {index + 1} · {new Date(visit.date).toLocaleDateString()}</Text><Text style={styles.body}>{visit.symptoms}</Text>
-                <Pressable accessibilityRole="button" disabled={locked} onPress={() => continueCase(record, visit.id)} style={styles.reviewButton}><Text style={styles.reviewText}>{language === 'ha' ? 'Jerin ayyuka / tunatarwa' : 'Checklist / reminder'}</Text></Pressable>
-                {visit.assessment && <><Text style={styles.muted}>{visit.assessment.visual_observations}</Text><Pressable accessibilityRole="button" disabled={locked} onPress={() => continueCase(record, visit.id)} style={[styles.reviewButton, locked && styles.disabled]}><Text style={styles.reviewText}>{language === 'ha' ? 'Duba shawara / amsa tambaya' : 'View advice / answer question'}</Text></Pressable></>}
+                <Pressable accessibilityRole="button" disabled={locked} onPress={() => openCaseSection(record, visit.id, 'checklist')} style={({ pressed }) => [styles.reviewButton, (pressed || locked) && styles.disabled]}><Text style={styles.reviewText}>{language === 'ha' ? 'Jerin ayyuka' : 'Checklist'}</Text></Pressable>
+                <Pressable accessibilityRole="button" disabled={locked} onPress={() => openCaseSection(record, visit.id, 'reminder')} style={({ pressed }) => [styles.reviewButton, (pressed || locked) && styles.disabled]}><Text style={styles.reviewText}>{language === 'ha' ? 'Tunatarwa' : 'Reminder'}</Text></Pressable>
+                {visit.assessment && <><Text style={styles.muted}>{visit.assessment.visual_observations}</Text><Pressable accessibilityRole="button" disabled={locked} onPress={() => openCaseSection(record, visit.id, 'advice')} style={({ pressed }) => [styles.reviewButton, (pressed || locked) && styles.disabled]}><Text style={styles.reviewText}>{language === 'ha' ? 'Duba shawara' : 'View advice'}</Text></Pressable>
+                  {!!visit.assessment.follow_up_question && <Pressable accessibilityRole="button" disabled={locked} onPress={() => openCaseSection(record, visit.id, 'question')} style={({ pressed }) => [styles.reviewButton, (pressed || locked) && styles.disabled]}><Text style={styles.reviewText}>{language === 'ha' ? 'Amsa tambaya' : 'Answer question'}</Text></Pressable>}
+                </>}
                 {!visit.assessment && <>
                   {!!visit.stage && <Text style={styles.body}>{visit.stage}</Text>}
                   {!!visit.location && <Text style={styles.body}>{visit.location}</Text>}
@@ -950,6 +996,7 @@ export default function App() {
           </View>)}
         </View>
         <View style={styles.footer}><Text style={styles.footerBrand}>FIELDNOTE</Text><Text style={styles.hint}>{w.footer}</Text></View>
+        </View>
       </ScrollView>
       <Modal visible={sharePreview !== null} transparent animationType="fade" onRequestClose={() => { if (!sharing) setSharePreview(null); }}>
         <View style={styles.modalBackdrop}><View style={styles.modalCard} accessibilityViewIsModal>

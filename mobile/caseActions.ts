@@ -34,3 +34,20 @@ export function localRecheck(value?: string | null): string {
 export function recheckDue(value?: string | null, now = Date.now()): boolean {
   return !!value && Number.isFinite(Date.parse(value)) && Date.parse(value) <= now;
 }
+
+export function reminderDraft(saved?: string | null, now = new Date()): Date {
+  if (saved && Number.isFinite(Date.parse(saved))) return new Date(saved);
+  const date = new Date(now);
+  date.setDate(date.getDate() + 1);
+  date.setHours(9, 0, 0, 0);
+  return date;
+}
+
+// Dismissal changes nothing; selecting a date retains the draft time.
+export function applyReminderPick(current: Date, mode: 'date' | 'time', type: string, selected?: Date): Date {
+  if (type !== 'set' || !selected) return current;
+  const next = new Date(current);
+  if (mode === 'date') next.setFullYear(selected.getFullYear(), selected.getMonth(), selected.getDate());
+  else next.setHours(selected.getHours(), selected.getMinutes(), 0, 0);
+  return next;
+}

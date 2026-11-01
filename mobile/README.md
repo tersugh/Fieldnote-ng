@@ -35,8 +35,9 @@ If an old screen appears, confirm Expo's “Starting project at” points to **t
 - **Photo visits:** adding a dated visit to an existing case uses `/api/followup` with the immediately preceding photo/note. Initial visits use `/api/diagnose`.
 - **Clarification:** select a saved visit, type an answer and choose **Save answer offline** or **Update advice**. `/api/refine` updates that visit and retains Q&A/revisions, without adding a photo visit. **Android voice answers are not enabled**, even though voice field notes are implemented.
 - **Optional sharing:** review the saved-case summary, then use native **text-only** sharing or manually copy selectable text. No Android photo attachment or printable field-plan export is implemented. Sharing does not call the Fieldnote backend; delivery is not confirmed.
-- **Checklist:** snapshot existing advice wording per visit, mark To do/Done/Skipped, add notes up to 300 characters, then Save progress. Later advice does not replace the snapshot.
-- **Recheck:** set/change/dismiss a case-level local date/time (`YYYY-MM-DD HH:mm`). Due cases appear first and open photo follow-up on the same case. Reminders are **in-app only**, refreshed while open/on foreground return. **No notifications are sent when the app is closed.** No notification permission is requested, so denial cannot block these local controls.
+- **Checklist:** snapshot existing advice wording per visit, mark To do/Done/Skipped, add notes up to 300 characters, then Save progress. Successful saves collapse the editor and retain a visible saved checklist; Edit checklist reopens saved progress. Failed saves keep entries open with a retryable error. Later advice does not replace the snapshot.
+- **Recheck:** set/change/dismiss a case-level reminder using native Android date and time pickers. A new draft starts tomorrow at 09:00 in device-local time; an existing reminder opens at its saved time. Picker selection/cancellation never saves: confirm with Save reminder. Successful saves collapse the editor and show the saved time; failures retain the draft. Due cases appear first and open photo follow-up on the same case. Reminders are **in-app only**, refreshed while open/on foreground return. **No notifications are sent when the app is closed.** No notification permission is requested, so denial cannot block these local controls.
+- **Casebook navigation:** separate Checklist, Reminder, View advice and Answer question actions select the saved visit and scroll to its section after layout. Photo follow-up remains a separate action. Local saves show pressed/loading/success feedback and block duplicate submissions.
 - **SAM 3.1:** planned only; no segmentation integration exists.
 
 All checklist/reminder changes use existing SQLite records without a schema migration or AI request. Local recovery paths are implemented; clearing app data removes local records, and actual restart durability still requires device verification.
@@ -61,6 +62,7 @@ cd ..
 node test_pending_android.mjs
 node test_case_sharing.mjs
 node test_case_actions.mjs
+node test_android_actions.mjs
 node test_web_panel.mjs
 python3 -m unittest -v
 ```
@@ -74,5 +76,7 @@ python3 -m unittest -v
 **Still unverified:** restart/storage and checklist durability, Hausa linguistic quality and agronomic accuracy. Separate camera/gallery permission/cancellation and resize checks, microphone denial/interruption, offline retry, photo comparison, clarification and reminder timing/foreground refresh also need confirmation. Sharing notes record implementation and mocked tests, not successful native share-sheet or recipient-delivery checks. No build, emulator or live-service check was performed for this correction.
 
 ## Screenshots and remaining work
+
+**1 November 2026 interaction fix:** added `@react-native-community/datetimepicker` **9.2.1**, matching the installed Expo SDK 58 bundled-module manifest; package and lockfile are updated (`npm ci` installs it). Android typecheck passed. `test_android_actions.mjs` passed four focused groups for save/retry/duplicate taps, editor reopening, picker drafts/cancellation and section navigation. Existing action, Android retry and sharing suites also passed (including the web regression suite imported by the action tests). These use simulated hooks, storage, native dialogs and layout measurements; actual picker rendering, scroll placement and restart durability still need device verification. No emulator or build was run for this fix.
 
 No Android screenshots are bundled in the project-owned source tree. A fresh combined release smoke test and reliable voice transcription remain outstanding; SAM 3.1, closed-app notifications, photo attachments in native sharing and Android print export are not implemented. There is no backend case backup or cross-device sync. The [build log](../HACKATHON_BUILD_LOG.md) contains dated hackathon contributions and test evidence; older scaffold and [Android plan](../ANDROID_APP_PLAN.md) entries are historical planning, not current completion or verification claims.
