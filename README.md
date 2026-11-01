@@ -82,6 +82,7 @@ From the root, after installing mobile dependencies (the fixture suites use its 
 
 ```bash
 node test_web_panel.mjs
+node test_web_actions.mjs
 node test_pending_android.mjs
 node test_case_sharing.mjs
 node test_case_actions.mjs
@@ -99,6 +100,8 @@ Previously recorded automated results on **30 October 2026**: **32 distinct clie
 **Voice:** the recording flow was exercised, but a “no speech” error occurred. Reliable transcription and successful editable-transcript delivery remain unverified; typed input remains available and Hausa voice is not enabled.
 
 **Still unverified:** real reload/restart durability, Hausa linguistic quality and agronomic accuracy. Camera/gallery permission and cancellation edge cases, photo resizing, end-to-end comparison/refinement, and reminder timing/foreground refresh need separate confirmation. Existing sharing notes establish implementation and mocked tests only; real share sheets, receiving apps and recipient delivery remain unverified.
+
+**Web interaction update, 1 November 2026:** checklist and reminder editors now collapse after a successful local save, retain drafts on failure, and show saving feedback. Casebook shortcuts target Checklist, Reminder, View advice or Answer question for the selected incident after layout. The existing `datetime-local` picker and local-only reminder behavior are unchanged; no dependency was added. Four focused web action test groups cover saves, failures, duplicate taps, reopening and navigation across multiple cases/incidents. These use simulated DOM/storage; real browser layout and IndexedDB durability are not established by these tests.
 
 ## Repository guide
 

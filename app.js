@@ -29,6 +29,7 @@ let displayedVisit = null;
 let refineBusy = false;
 let visitBusy = false;
 let caseActionBusy = false;
+let caseNavigationToken = 0;
 let savedPreviewUrl = null;
 let draftWrites = Promise.resolve();
 let draftSaveError = null;
@@ -479,14 +480,15 @@ newCaseButton.addEventListener('click', startNewCase);
 casebookList.addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-action]');
   if (!button || refineBusy || visitBusy || caseActionBusy) return;
+  const navigationToken = ++caseNavigationToken;
   if (button.dataset.action === 'retry') return retryWebAnalysis(button.dataset.caseId, Number(button.dataset.visitIndex));
   cancelRecording();
   await draftWrites;
   if (draftSaveError) return;
   const record = await getCase(button.dataset.caseId);
-  if (!record) return;
-  if (button.dataset.action === 'advice') {
-    showSavedAdvice(record, Number(button.dataset.visitIndex));
+  if (!record || navigationToken !== caseNavigationToken || caseActionBusy) return;
+  if (['advice', 'question', 'checklist', 'reminder'].includes(button.dataset.action)) {
+    openCaseSection(record, Number(button.dataset.visitIndex), button.dataset.action, navigationToken);
   } else if (button.dataset.action === 'continue') {
     activateCase(record);
     clearPhotoInput();
@@ -544,7 +546,10 @@ async function renderCasebook() {
       const cropName = language==='ha'?(cropNames.ha[record.crop]||record.crop):record.crop;
       const adviceActions = record.observations.map((visit, index) =>
         `<div><span>${index + 1} · ${escapeHtml(analysisStatus(visit))}</span>
-        <button type="button" data-action="advice" data-case-id="${escapeHtml(record.id)}" data-visit-index="${index}">${escapeHtml(visit.assessment ? tr('openAdvice') : (language === 'ha' ? 'Duba bayanan da aka ajiye' : 'View saved details'))}</button>
+        <button type="button" data-action="advice" data-case-id="${escapeHtml(record.id)}" data-visit-index="${index}">${escapeHtml(visit.assessment ? (language === 'ha' ? 'Duba shawara' : 'View advice') : (language === 'ha' ? 'Duba bayanan da aka ajiye' : 'View saved details'))}</button>
+        ${visit.assessment?.follow_up_question ? `<button type="button" data-action="question" data-case-id="${escapeHtml(record.id)}" data-visit-index="${index}">${language === 'ha' ? 'Amsa tambaya' : 'Answer question'}</button>` : ''}
+        <button type="button" data-action="checklist" data-case-id="${escapeHtml(record.id)}" data-visit-index="${index}">${language === 'ha' ? 'Jerin ayyuka' : 'Checklist'}</button>
+        <button type="button" data-action="reminder" data-case-id="${escapeHtml(record.id)}" data-visit-index="${index}">${language === 'ha' ? 'Tunatarwa' : 'Reminder'}</button>
         ${!visit.assessment ? `<button type="button" data-action="retry" data-case-id="${escapeHtml(record.id)}" data-visit-index="${index}">${language === 'ha' ? 'Sake neman tantancewa' : 'Retry analysis'}</button>` : ''}</div>`).join('');
       const shareAction = `<button type="button" data-action="share" data-case-id="${escapeHtml(record.id)}">${tr('share')}</button>`;
       return `<article class="case-card">${record.recheckAt ? `<div class="recheck-notice"><strong>${recheckDue(record.recheckAt) ? (language === 'ha' ? 'Lokacin sake dubawa ya yi' : 'Recheck due') : (language === 'ha' ? 'Tunatarwar sake dubawa' : 'Recheck reminder')}</strong> · ${escapeHtml(formatDate(record.recheckAt))}<button type="button" data-action="continue" data-case-id="${escapeHtml(record.id)}">${language === 'ha' ? 'Fara ziyara da sabon hoto a wannan rahoto' : 'Start photo follow-up on this case'}</button></div>` : ''}<div class="case-card-top"><div><span class="case-crop">${escapeHtml(cropName)}</span><span class="case-location">${record.location ? escapeHtml(record.location) : tr('noLocation')}</span></div><span class="case-count">${record.observations.length} ${record.observations.length === 1 ? tr('visit') : tr('visits')}</span></div><p class="case-excerpt">${escapeHtml(excerpt)}</p><div class="case-card-foot"><span>${tr('updated')} ${escapeHtml(formatDate(record.updatedAt))}</span><div class="case-actions">${adviceActions}${shareAction}<button type="button" data-action="print" data-case-id="${escapeHtml(record.id)}">${tr('print')}</button><button type="button" class="case-continue" data-action="continue" data-case-id="${escapeHtml(record.id)}">${tr('addFollowup')} ↗</button></div></div></article>`;
@@ -598,6 +603,11 @@ async function saveWebCaseAction(kind) {
   const caseId = displayedCase.id, index = displayedVisit;
   const panel = document.querySelector('#case-action-panel');
   const status = document.querySelector('#action-status');
+  const submit = document.querySelector({ create: '#create-checklist', progress: '#save-progress', reminder: '#save-recheck', dismiss: '#dismiss-recheck' }[kind]);
+  const submitText = submit?.textContent;
+  if (submit) submit.textContent = language === 'ha' ? 'Ana ajiyewa…' : 'Saving…';
+  status.textContent = language === 'ha' ? 'Ana ajiyewa a wannan na’ura…' : 'Saving on this device…';
+  panel.setAttribute('aria-busy', 'true');
   panel.querySelectorAll('button, input, select, textarea').forEach(element => { element.disabled = true; });
   const otherControls = '#clarification-answer, #answer-voice, #update-advice, #save-local, #submit-button, [data-language], #new-case-button, #photo, #voice-button, #casebook-list button';
   document.querySelectorAll(otherControls).forEach(element => { element.disabled = true; });
@@ -620,21 +630,42 @@ async function saveWebCaseAction(kind) {
     await putCase(record);
     if (activeCaseId === caseId) activeCaseRecord = record;
     displayedCase = record;
-    if (kind === 'create') renderCaseActions();
-    else {
+    if (kind === 'create') {
+      // Creating the checklist must not discard an unrelated reminder draft.
+      const reminderDraft = document.querySelector('#recheck-time').value;
+      const reminderOpen = document.querySelector('#reminder-editor').open;
+      renderCaseActions();
+      document.querySelector('#recheck-time').value = reminderDraft;
+      document.querySelector('#reminder-editor').open = reminderOpen;
+      document.querySelector('#checklist-editor').open = true;
+    } else if (kind === 'progress') {
+      document.querySelector('#checklist-saved').innerHTML = checklistSummary(visit.checklist);
+      document.querySelector('#checklist-editor').open = false;
+    } else {
       document.querySelector('#dismiss-recheck').hidden = !record.recheckAt;
       document.querySelector('#recheck-time').value = localRecheck(record.recheckAt);
+      document.querySelector('#reminder-saved').textContent = record.recheckAt ? formatDate(record.recheckAt) : '';
+      document.querySelector('#reminder-toggle').textContent = record.recheckAt ? (language === 'ha' ? 'Canza tunatarwa' : 'Change reminder') : (language === 'ha' ? 'Saita tunatarwa' : 'Set reminder');
+      document.querySelector('#reminder-editor').open = false;
     }
     document.querySelector('#action-status').textContent = language === 'ha' ? 'An ajiye a wannan na’ura.' : 'Saved on this device.';
     await renderCasebook();
   } catch (error) {
-    status.textContent = error.message || 'Could not save. Your edits are still here.';
+    const editor = document.querySelector(kind === 'reminder' || kind === 'dismiss' ? '#reminder-editor' : '#checklist-editor');
+    if (editor) editor.open = true;
+    document.querySelector('#action-status').textContent = (language === 'ha' ? 'Ba a iya ajiyewa ba. Bayanan suna nan; sake gwadawa. ' : 'Could not save. Your entries remain here; save again to retry. ') + (error.message || '');
   } finally {
     caseActionBusy = false;
+    panel.setAttribute('aria-busy', 'false');
+    if (submit) submit.textContent = submitText;
     panel.querySelectorAll('button, input, select, textarea').forEach(element => { element.disabled = false; });
     document.querySelectorAll(otherControls).forEach(element => { element.disabled = false; });
     if (language === 'ha') document.querySelectorAll('#voice-button, #answer-voice').forEach(element => { element.disabled = true; });
   }
+}
+
+function checklistSummary(checklist) {
+  return `<ol>${checklist.items.map(item => `<li>${escapeHtml(item.text)}<p>${escapeHtml(item.state === 'done' ? (language === 'ha' ? 'An yi' : 'Done') : item.state === 'skipped' ? (language === 'ha' ? 'An tsallake' : 'Skipped') : (language === 'ha' ? 'A yi' : 'To do'))}${item.note ? ' · ' + escapeHtml(item.note) : ''}</p></li>`).join('')}</ol>`;
 }
 
 function renderCaseActions() {
@@ -644,22 +675,24 @@ function renderCaseActions() {
   if (!visit) return;
   const label = (en, ha) => language === 'ha' ? ha : en;
   const checklist = visit.checklist;
-  panel.innerHTML = `<h3>${label('Action checklist', 'Jerin ayyuka')}</h3>
+  panel.innerHTML = `<p id="action-status" role="status" aria-live="polite"></p><section id="checklist-section" tabindex="-1"><h3>${label('Action checklist', 'Jerin ayyuka')}</h3>
     <p>${label('These are the saved advice steps, unchanged. Save progress after editing. No AI request is made.', 'Waɗannan matakan shawara ne da aka ajiye, ba su canza ba. Ajiye ci gaba bayan gyara.')}</p>
     ${!checklist && visit.assessment?.next_steps?.length ? `<button type="button" id="create-checklist">${label('Save these steps as a checklist', 'Ajiye waɗannan matakai a jeri')}</button>` : ''}
-    ${checklist ? `<ol>${checklist.items.map((item, index) => `<li><p>${escapeHtml(item.text)}</p>
+    ${checklist ? `<div id="checklist-saved">${checklistSummary(checklist)}</div><details id="checklist-editor"><summary>${label('Edit checklist', 'Gyara jerin ayyuka')}</summary><ol>${checklist.items.map((item, index) => `<li><p>${escapeHtml(item.text)}</p>
       <label for="step-state-${index}">${label('Status', 'Matsayi')}</label>
       <select id="step-state-${index}">${['todo', 'done', 'skipped'].map(state => `<option value="${state}" ${item.state === state ? 'selected' : ''}>${state === 'todo' ? label('To do', 'A yi') : state === 'done' ? label('Done', 'An yi') : label('Skipped', 'An tsallake')}</option>`).join('')}</select>
       <label for="step-note-${index}">${label('Optional note (300 characters)', 'Bayani na zaɓi (haruffa 300)')}</label>
       <textarea id="step-note-${index}" maxlength="300" rows="2">${escapeHtml(item.note)}</textarea></li>`).join('')}</ol>
-      <button type="button" id="save-progress">${label('Save progress', 'Ajiye ci gaba')}</button>` : ''}
-    <h3>${label('Recheck reminder', 'Tunatarwar sake dubawa')}</h3>
+      <button type="button" id="save-progress">${label('Save progress', 'Ajiye ci gaba')}</button></details>` : ''}</section>
+    <section id="reminder-section" tabindex="-1"><h3>${label('Recheck reminder', 'Tunatarwar sake dubawa')}</h3>
     <p>${label('Choose a local date and time. Reminders appear here when this app is open; no push notifications or automatic uploads.', 'Zaɓi kwanan wata da lokacin yankinka. Tunatarwa tana bayyana a nan yayin da manhaja take buɗe; babu aikawa ta atomatik.')}</p>
+    <p id="reminder-saved">${displayedCase.recheckAt ? escapeHtml(formatDate(displayedCase.recheckAt)) : ''}</p>
+    <details id="reminder-editor"><summary id="reminder-toggle">${displayedCase.recheckAt ? label('Change reminder', 'Canza tunatarwa') : label('Set reminder', 'Saita tunatarwa')}</summary>
     <label for="recheck-time">${label('Local date and time', 'Kwanan wata da lokaci')}</label>
     <input id="recheck-time" type="datetime-local" value="${escapeHtml(localRecheck(displayedCase.recheckAt))}">
-    <button type="button" id="save-recheck">${label('Set / change reminder', 'Saita / canza tunatarwa')}</button>
+    <button type="button" id="save-recheck">${label('Save reminder', 'Ajiye tunatarwa')}</button></details>
     <button type="button" id="dismiss-recheck" ${displayedCase.recheckAt ? '' : 'hidden'}>${label('Dismiss reminder', 'Soke tunatarwa')}</button>
-    <p id="action-status" role="status"></p>`;
+    </section>`;
   panel.querySelector('#create-checklist')?.addEventListener('click', () => saveWebCaseAction('create'));
   panel.querySelector('#save-progress')?.addEventListener('click', () => saveWebCaseAction('progress'));
   panel.querySelector('#save-recheck').addEventListener('click', () => saveWebCaseAction('reminder'));
@@ -836,6 +869,7 @@ function shareCaseWithWorker(record) {
   summary.focus();
 }
 function activateCase(record) {
+  ++caseNavigationToken;
   activeCaseId = record.id;
   activeCaseRecord = record;
   const knownCrop = Array.from(cropSelect.options).some((option) => option.value === record.crop);
@@ -864,6 +898,7 @@ function clearPhotoInput() {
   uploadHint.textContent = tr('photoHint');
 }
 async function startNewCase() {
+  ++caseNavigationToken;
   if (refineBusy || visitBusy || caseActionBusy) return;
   cancelRecording();
   await draftWrites;
@@ -941,6 +976,7 @@ function renderAssessment(a, isFollowup = false) {
 function showSavedAdvice(record, index, bringIntoView = true) {
   const visit = record.observations[index];
   if (!visit) return;
+  ++caseNavigationToken;
   cancelRecording();
   displayedCase = record;
   displayedVisit = index;
@@ -951,6 +987,28 @@ function showSavedAdvice(record, index, bringIntoView = true) {
     panel.focus({ preventScroll: true });
     panel.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
   }
+}
+
+function openCaseSection(record, index, section, token) {
+  if (token !== caseNavigationToken || !record.observations[index]) return;
+  if (displayedCase?.id !== record.id || displayedVisit !== index) showSavedAdvice(record, index, false);
+  const currentToken = caseNavigationToken;
+  const editor = section === 'checklist' ? '#checklist-editor' : section === 'reminder' ? '#reminder-editor' : null;
+  if (editor) {
+    const element = document.querySelector(editor);
+    if (element) element.open = true;
+  }
+  if (section === 'advice') analysisResult.scrollTop = 0;
+  // Let details expansion and the selected incident render before targeting it.
+  window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+    if (currentToken !== caseNavigationToken || displayedCase?.id !== record.id || displayedVisit !== index) return;
+    const selector = { checklist: '#checklist-section', reminder: '#reminder-section', advice: '#analysis-result', question: '#clarification-form' }[section];
+    const target = document.querySelector(selector);
+    if (!target || target.hidden) return;
+    target.setAttribute('tabindex', '-1');
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  }));
 }
 
 function renderSavedAdvice() {

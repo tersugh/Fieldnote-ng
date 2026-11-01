@@ -21,12 +21,26 @@ export async function webHarness(stored = new Map()) {
       handlers: {}, classList: { add() {}, remove() {}, toggle() {} },
       addEventListener(type, callback) { this.handlers[type] = callback; },
       dispatchEvent(event) { return this.handlers[event.type]?.(event); },
-      setAttribute() {}, removeAttribute() {}, reset() {},
+      attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, removeAttribute(name) { delete this.attributes[name]; }, reset() {},
       focus() { this.focused = true; }, scrollIntoView() { this.scrolls = (this.scrolls || 0) + 1; },
       querySelector: node,
       querySelectorAll: () => [],
       set innerHTML(value) {
         this.markup = value;
+        if (id === '#case-action-panel') {
+          const controls = [];
+          for (const match of value.matchAll(/<details\b([^>]*\bid="([^"]+)"[^>]*)>/g)) node('#' + match[2]).open = /\bopen\b/.test(match[1]);
+          for (const match of value.matchAll(/<(input|textarea|select|button)\b([^>]*\bid="([^"]+)"[^>]*)>(?:([\s\S]*?)<\/\1>)?/g)) {
+            const [, tag, attrs, key, contents = ''] = match, child = node('#' + key);
+            child.disabled = false;
+            if (tag === 'input') child.value = attrs.match(/\bvalue="([^"]*)"/)?.[1] || '';
+            if (tag === 'textarea') child.value = contents;
+            if (tag === 'select') child.value = contents.match(/value="([^"]+)" selected/)?.[1] || 'todo';
+            if (tag === 'button') child.textContent = contents;
+            if (!controls.includes(child)) controls.push(child);
+          }
+          this.querySelectorAll = () => controls;
+        }
         if (id === '#clarification-panel') {
           node('#clarification-answer').value = value.match(/<textarea[^>]*>([\s\S]*?)<\/textarea>/)?.[1] || '';
         }
@@ -38,10 +52,11 @@ export async function webHarness(stored = new Map()) {
   }
   const network = { response: null, fail: false, status: 200, wait: null, bodyError: null };
   const requests = [];
+  const storage = { fail: false, wait: null, writes: 0, readWait: null };
   const context = createContext({
     document: { querySelector: node, getElementById: id => node('#' + id), querySelectorAll: () => [], documentElement: {} },
     localStorage: { getItem() {}, setItem() {} },
-    window: { addEventListener() {}, matchMedia: () => ({ matches: true }) },
+    window: { addEventListener() {}, requestAnimationFrame: callback => callback(), matchMedia: () => ({ matches: true }) },
     navigator: { onLine: false }, URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} }, Event: class { constructor(type) { this.type = type; } },
     crypto: { randomUUID }, AbortController, setTimeout, clearTimeout,
     fetch: async (url, options) => {
@@ -51,8 +66,8 @@ export async function webHarness(stored = new Map()) {
       if (network.fail) throw new Error('Simulated connection failure');
       return { ok: network.status === 200, status: network.status, json: async () => { if (network.bodyError) throw network.bodyError; return { assessment: network.response, detail: 'Fixture service rejection' }; } };
     },
-    testGet: async id => structuredClone(stored.get(id)),
-    testPut: async record => stored.set(record.id, structuredClone(record)),
+    testGet: async id => { if (storage.readWait) await storage.readWait(id); return structuredClone(stored.get(id)); },
+    testPut: async record => { storage.writes++; if (storage.wait) await storage.wait; if (storage.fail) throw new Error('Storage unavailable'); return stored.set(record.id, structuredClone(record)); },
   });
   // Only external I/O is substituted; app event handlers and renderers execute unchanged.
   const isolatedSource = source
@@ -63,7 +78,7 @@ export async function webHarness(stored = new Map()) {
     async function readAsDataUrl() { return 'data:image/jpeg;base64,TEST_FIXTURE'; }
   `, context);
 
-  return { node, stored, requests, context, network };
+  return { node, stored, requests, context, network, storage };
 }
 
 const assessment = text => ({ visual_observations: text, possible_causes: [], next_steps: ['Inspect leaves'], urgency: 'Monitor', follow_up_question: 'Has it spread?' });

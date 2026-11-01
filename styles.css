@@ -22,6 +22,12 @@ body.printing-case #print-report{display:block}
 .case-action-panel li{margin-bottom:18px;white-space:pre-wrap;overflow-wrap:anywhere}
 .case-action-panel button{min-height:44px;padding:10px;margin:6px 4px 6px 0;border:1px solid #dce3da;border-radius:8px;color:#214e37;background:#edf3ea;cursor:pointer}
 .case-action-panel input{padding:10px;max-width:100%}
+.case-action-panel summary{cursor:pointer;min-height:44px;padding:12px 0;font-weight:700;color:var(--green)}
+.case-action-panel button:active,.case-action-panel summary:active{background:#cbdcc5}
+.case-action-panel button:disabled{opacity:.55;cursor:wait}
+.case-action-panel[aria-busy="true"]{cursor:progress}
+#action-status:not(:empty){padding:10px;background:#edf3ea;border-radius:8px}
+#checklist-section,#reminder-section,#analysis-result,#clarification-form{scroll-margin-top:24px}
 .recheck-notice{padding:12px;background:#f5f8f2;border-left:3px solid #59775d;margin-bottom:12px}
 .share-review{width:min(640px,calc(100% - 32px));max-height:90vh;overflow:auto;border:1px solid #dfe5dc;border-radius:18px;padding:24px;background:var(--paper);color:var(--ink)}
 .share-review::backdrop{background:rgba(30,46,37,.4)}
