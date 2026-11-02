@@ -746,125 +746,60 @@ function buildCaseSummary(record, language = 'en') {
   return lines.join('\n');
 }
 
-async function shareWebSummary(text, photo, platform = navigator) {
-  if (typeof platform.share !== 'function') return 'unavailable';
-  const payload = { title: 'Fieldnote', text };
-  if (photo) {
-    try {
-      if (!platform.canShare?.({ ...payload, files: [photo] })) return 'unsupported-photo';
-    } catch { return 'unsupported-photo'; }
-    payload.files = [photo];
-  }
-  try {
-    await platform.share(payload);
-    return 'opened';
-  } catch (error) {
-    return error?.name === 'AbortError' ? 'cancelled' : 'failed';
-  }
-}
-
-async function copyCaseSummary(text, platform = navigator) {
-  try {
-    if (!platform.clipboard?.writeText) return false;
-    await platform.clipboard.writeText(text);
-    return true;
-  } catch { return false; }
-}
-
-function downloadCaseSummary(text) {
-  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = 'fieldnote-case-summary.txt';
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
 function shareCaseWithWorker(record) {
-  const ha = language === 'ha';
-  const label = (en, translated) => ha ? translated : en;
+  const reviewRecord = structuredClone(record);
+  const reviewLanguage = language;
+  const label = (en, ha) => reviewLanguage === 'ha' ? ha : en;
   const dialog = document.querySelector('#share-review');
   const summary = document.querySelector('#share-summary');
   const status = document.querySelector('#share-status');
-  const photoChoice = document.querySelector('#share-photo');
-  const photoButton = document.querySelector('#share-with-photo');
-  const textButton = document.querySelector('#share-text');
-  const closeButton = document.querySelector('#share-close');
-  const preview = document.querySelector('#share-photo-preview');
+  const confirm = document.querySelector('#share-pdf');
+  const download = document.querySelector('#share-download');
+  const close = document.querySelector('#share-close');
   const opener = document.activeElement;
-  let previewUrl = null;
-  let pending = false;
-  const text = buildCaseSummary(record, language);
+  let pending = false, generated = null;
+  const text = buildCaseSummary(reviewRecord, reviewLanguage);
   summary.value = text;
   status.textContent = '';
   document.querySelector('#share-title').textContent = label('Review before sharing', 'Duba rahoto kafin rabawa');
-  document.querySelector('#share-explanation').textContent = label('Optional: ask an extension worker for a second opinion. Review the saved details below, then choose who receives them. Nothing is uploaded by Fieldnote.', 'Zaɓi ne: nemi ƙarin ra’ayin jami’in noma. Duba bayanan da ke ƙasa sannan ka zaɓi wanda za a aika wa. Fieldnote ba ta aika bayanan zuwa sabar ba.');
-  document.querySelector('#share-summary-label').textContent = label('Case summary (select text to copy manually)', 'Taƙaitaccen rahoto (zaɓi rubutu don kwafawa)');
-  document.querySelector('#share-photo-label').textContent = label('Optional photo from a saved visit', 'Hoto daga ziyarar da aka ajiye (zaɓi ne)');
-  textButton.textContent = label('Share summary only', 'Raba rubutu kawai');
-  photoButton.textContent = label('Share summary and selected photo', 'Raba rubutu da hoton da aka zaɓa');
-  document.querySelector('#share-copy').textContent = label('Copy summary', 'Kwafi rahoto');
-  document.querySelector('#share-download').textContent = label('Download summary', 'Sauke rahoto');
-  closeButton.textContent = label('Close', 'Rufe');
-  const photos = [];
-  photoChoice.replaceChildren();
-  (record.observations || []).forEach((visit, index) => {
-    const photo = visit.photo;
-    if (!(photo instanceof Blob) || !photo.size || !['image/jpeg', 'image/png', 'image/webp'].includes(photo.type)) return;
-    const file = new File([photo], 'fieldnote-visit-' + (index + 1) + ({ 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' }[photo.type]), { type: photo.type });
-    try {
-      if (!navigator.canShare?.({ title: 'Fieldnote', text, files: [file] })) return;
-    } catch { return; }
-    const option = document.createElement('option');
-    option.value = String(photos.length);
-    option.textContent = label('Visit ', 'Ziyara ') + (index + 1) + ' · ' + formatDate(visit.date);
-    photos.push(file);
-    photoChoice.append(option);
-  });
-  document.querySelector('#share-photo-controls').hidden = !photos.length || !navigator.share;
-  textButton.hidden = !navigator.share;
-  const releasePreview = () => { if (previewUrl) URL.revokeObjectURL(previewUrl); previewUrl = null; };
-  const updatePhoto = () => {
-    releasePreview();
-    const photo = photos[Number(photoChoice.value)];
-    preview.hidden = !photo;
-    if (photo) { previewUrl = URL.createObjectURL(photo); preview.src = previewUrl; }
-    else preview.removeAttribute('src');
-  };
-  photoChoice.value = String(Math.max(0, photos.length - 1));
-  photoChoice.onchange = updatePhoto;
-  updatePhoto();
-  const setPending = (value) => {
-    pending = value;
-    textButton.disabled = photoButton.disabled = closeButton.disabled = photoChoice.disabled = value;
-  };
-  const share = async (photo) => {
+  document.querySelector('#share-explanation').textContent = label(
+    'Confirm to create a PDF containing this complete summary and a dated photo for every saved visit. Unavailable photos will be labelled in the PDF. It is generated on this device; nothing is uploaded by Fieldnote.',
+    'Tabbatar don ƙirƙirar PDF da wannan rahoto da hoton kowace ziyara tare da kwanan wata. Za a nuna hoton da ba a samu ba. Ana ƙirƙirarsa a wannan na’ura kawai.');
+  document.querySelector('#share-summary-label').textContent = label('Complete case summary', 'Cikakken rahoto');
+  confirm.textContent = label('Create PDF to share', 'Ƙirƙira PDF don rabawa');
+  download.textContent = label('Download PDF', 'Sauke PDF');
+  close.textContent = label('Close', 'Rufe');
+  const perform = async downloadOnly => {
     if (pending) return;
-    setPending(true);
+    pending = true;
+    confirm.disabled = download.disabled = close.disabled = true;
+    status.textContent = label('Preparing PDF on this device…', 'Ana shirya PDF a wannan na’ura…');
     try {
-      const result = await shareWebSummary(text, photo);
-      status.textContent = result === 'opened' ? label('Share options used. Delivery is not confirmed.', 'An yi amfani da zaɓin rabawa. Ba a tabbatar da isarwa ba.')
-        : result === 'cancelled' ? label('Sharing cancelled. Your saved case is unchanged.', 'An soke rabawa. Rahoton da aka ajiye bai canza ba.')
-        : label('Sharing was unavailable or failed. Try sharing the summary only, copy it, or download it.', 'Ba a samu rabawa ba ko ta gaza. Gwada rubutu kawai, kwafa, ko sauke rahoton.');
-    } finally { setPending(false); }
+      if (!generated) {
+        generated = await FieldnotePdf.create(reviewRecord, text, reviewLanguage);
+        confirm.textContent = label('Share PDF', 'Raba PDF');
+        // File generation can outlast browser user activation. A fresh click
+        // opens the native share sheet reliably without discarding the PDF.
+        if (!downloadOnly && FieldnotePdf.canShareFile(generated.file)) {
+          status.textContent = label('PDF ready. Choose Share PDF or Download PDF.', 'PDF ya shirya. Zaɓi Raba PDF ko Sauke PDF.') + (generated.missing ? label(' Missing visit photos are labelled in the PDF.', ' An nuna hotunan da ba a samu ba a PDF.') : '');
+          return;
+        }
+      }
+      const result = downloadOnly ? (await FieldnotePdf.download(generated.file), 'downloaded') : await FieldnotePdf.share(generated.file);
+      status.textContent = (result === 'downloaded' ? label('PDF download requested.', 'An nemi sauke PDF.')
+        : result === 'opened' ? label('PDF share options used. Delivery is not confirmed.', 'An buɗe rabawar PDF. Ba a tabbatar da isarwa ba.')
+        : result === 'cancelled' ? label('Sharing cancelled. Your case is unchanged; you can retry.', 'An soke rabawa. Rahoton bai canza ba; za ka iya sake gwadawa.')
+        : label('Sharing failed. Retry sharing or choose Download PDF.', 'Rabawa ta gaza. Sake gwadawa ko sauke PDF.'))
+        + (generated.missing ? label(' Missing visit photos are labelled in the PDF.', ' An nuna hotunan da ba a samu ba a PDF.') : '');
+    } catch {
+      status.textContent = label('Could not prepare or download the PDF. Your case is unchanged. Try again.', 'Ba a iya shirya ko sauke PDF ba. Rahoton bai canza ba. Sake gwadawa.');
+    } finally { pending = false; confirm.disabled = download.disabled = close.disabled = false; }
   };
-  textButton.onclick = () => share(null);
-  photoButton.onclick = () => share(photos[Number(photoChoice.value)]);
-  document.querySelector('#share-copy').onclick = async () => {
-    const copied = await copyCaseSummary(text);
-    status.textContent = copied ? label('Summary copied. Paste it into your chosen message.', 'An kwafi rahoto. Manna shi a saƙon da ka zaɓa.')
-      : label('Copy was unavailable. Select and copy the text below, or download it.', 'Ba a samu kwafawa ba. Zaɓi rubutu ka kwafa, ko sauke shi.');
-    if (!copied) { summary.focus(); summary.select(); }
-  };
-  document.querySelector('#share-download').onclick = () => {
-    try { downloadCaseSummary(text); status.textContent = label('Summary download requested.', 'An nemi sauke rahoto.'); }
-    catch { status.textContent = label('Download failed. Select and copy the summary.', 'Sauke rahoto ya gaza. Zaɓi rubutu ka kwafa.'); summary.focus(); summary.select(); }
-  };
-  closeButton.onclick = () => { if (!pending) dialog.close(); };
-  dialog.oncancel = (event) => { if (pending) event.preventDefault(); };
-  dialog.onclose = () => { releasePreview(); opener?.focus(); };
+  confirm.onclick = () => perform(false);
+  download.onclick = () => perform(true);
+  close.onclick = () => { if (!pending) dialog.close(); };
+  dialog.oncancel = event => { if (pending) event.preventDefault(); };
+  dialog.onclose = () => { generated = null; opener?.focus(); };
   dialog.showModal();
   summary.focus();
 }

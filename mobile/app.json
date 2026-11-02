@@ -31,7 +31,8 @@
           "microphonePermission": "Fieldnote records an English voice note only when you choose to transcribe it.",
           "enableBackgroundRecording": false
         }
-      ]
+      ],
+      "expo-sharing"
     ]
   }
 }

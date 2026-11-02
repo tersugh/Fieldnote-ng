@@ -10,7 +10,6 @@ import {
   Pressable,
   ScrollView,
   type ScrollViewInstance,
-  Share,
   StatusBar,
   StyleSheet,
   Text,
@@ -24,7 +23,10 @@ import * as SQLite from 'expo-sqlite';
 import { File } from 'expo-file-system';
 import { useAudioStream, requestRecordingPermissionsAsync, setAudioModeAsync } from 'expo-audio';
 import { prepareTranscriptionWav } from './voice';
-import { buildCaseSummary, shareCaseSummary } from './caseSharing';
+import { buildCaseSummary } from './caseSharing';
+import { casePdfHtml, shareCasePdf, validateCasePdf, readPdfSignature, pdfFailureDetail } from './casePdf';
+import { printToFileAsync } from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import { analyzeSavedVisit, analysisStatus, createOperationGate, type AnalysisState } from './analysis';
 import { makeChecklist, updateChecklist, parseRecheck, recheckDue, type Checklist } from './caseActions';
 import { CaseActions, type ActionChange } from './CaseActionPanel';
@@ -311,6 +313,9 @@ export default function App() {
   const [shareStatus, setShareStatus] = useState('');
   const [sharing, setSharing] = useState(false);
   const sharePending = useRef(false);
+  const shareRecord = useRef<CropCase | null>(null);
+  const shareLanguage = useRef<'en' | 'ha'>('en');
+  const sharePdf = useRef<{ uri: string; originalUri: string; missing: number; base64?: string } | null>(null);
   const [activeCase, setActiveCase] = useState<CropCase | null>(null);
   const [crop, setCrop] = useState('');
   const [location, setLocation] = useState('');
@@ -439,8 +444,13 @@ export default function App() {
       setVoiceDiagnostics(
         'WAV: ' + info.duration.toFixed(1) + ' s · ' + info.sampleRate + ' Hz · mono · ' + info.sampleWidth
         + '-bit PCM · peak ' + (info.peak * 100).toFixed(2) + '% · RMS ' + (info.rms * 100).toFixed(2)
-        + '% · non-silent (not proof of speech). Source: ' + info.sourceRate + ' Hz / ' + info.sourceChannels + ' channel(s).'
+        + '% · ' + (info.tooQuiet ? 'input too quiet' : 'non-silent (not proof of speech)')
+        + '. Source: ' + info.sourceDuration.toFixed(2) + ' s / ' + info.sourceRate + ' Hz / ' + info.sourceChannels
+        + ' channel(s), 16-bit PCM · peak ' + (info.sourcePeak * 100).toFixed(3)
+        + '% · RMS ' + (info.sourceRms * 100).toFixed(3) + '%'
+        + (info.trimmed ? ' · limited to the first 30 s.' : ' · no duration trimming.')
       );
+      if (info.tooQuiet) throw new Error('The microphone captured an extremely quiet signal; this recording was not sent. Check the selected microphone and its input level. On an emulator, enable the host microphone input. Record a short sentence close to the microphone, or keep typing. Your existing note is unchanged.');
       const audioDataUrl = prepared.dataUrl;
       if (session !== voiceSession.current) return;
       const controller = new AbortController();
@@ -848,19 +858,65 @@ export default function App() {
   }
 
   function shareCaseWithWorker(record: CropCase) {
+    shareRecord.current = JSON.parse(JSON.stringify(record)) as CropCase;
+    shareLanguage.current = language;
+    sharePdf.current = null;
     setSharePreview(buildCaseSummary(record, language));
     setShareStatus('');
   }
 
   async function confirmShare() {
-    if (!sharePreview || sharePending.current) return;
+    if (!sharePreview || !shareRecord.current || sharePending.current) return;
     sharePending.current = true;
     setSharing(true);
+    setShareStatus(language === 'ha' ? 'Ana shirya PDF a wannan na’ura…' : 'Preparing PDF on this device…');
+    let pdfPhase = 'validate-cache';
     try {
-      await shareCaseSummary(sharePreview, (content) => Share.share(content));
-      setShareStatus(language === 'ha' ? 'An buɗe zaɓin rabawa. Ba a tabbatar da isarwa ba.' : 'Share options opened. Delivery is not confirmed.');
-    } catch {
-      setShareStatus(language === 'ha' ? 'Ba a iya buɗe rabawa ba. Sake gwadawa ko zaɓi rubutun ka kwafa.' : 'Could not open sharing. Try again or select and copy the summary below.');
+      if (sharePdf.current && !(await FileSystem.getInfoAsync(sharePdf.current.uri)).exists) sharePdf.current = null;
+      if (!sharePdf.current) {
+        pdfPhase = 'html';
+        const { html, missing } = await casePdfHtml(shareRecord.current, sharePreview, shareLanguage.current, async uri => {
+          if (!uri || !FileSystem.documentDirectory || !uri.startsWith(FileSystem.documentDirectory)) throw new Error('Local photo unavailable');
+          const context = ImageManipulator.manipulate(uri);
+          let rendered: ImageRef | null = null;
+          try {
+            rendered = await context.renderAsync();
+            const image = await rendered.saveAsync({ format: SaveFormat.JPEG, compress: 0.85, base64: true });
+            if (!image.base64) throw new Error('Photo could not be read');
+            const data = 'data:image/jpeg;base64,' + image.base64;
+            await FileSystem.deleteAsync(image.uri, { idempotent: true }).catch(() => {});
+            return data;
+          } finally { rendered?.release(); context.release(); }
+        });
+        pdfPhase = 'print';
+        const result = await printToFileAsync({ html, width: 595, height: 842, base64: true });
+        pdfPhase = 'validate';
+        const uri = await validateCasePdf(result, FileSystem.getInfoAsync,
+          async () => readPdfSignature(result.base64),
+          step => { pdfPhase = step; });
+        sharePdf.current = { uri, originalUri: uri, missing, base64: result.base64 };
+      }
+      // Print's host-cache URI is not readable by Expo Go's scoped Sharing module.
+      // Preserve it, and materialize the validated bytes in this experience's cache.
+      if (sharePdf.current.base64 !== undefined) {
+        pdfPhase = 'share-copy';
+        if (!FileSystem.cacheDirectory) throw new Error('share-copy-unavailable');
+        const uri = FileSystem.cacheDirectory + `fieldnote-case-${Date.now()}.pdf`;
+        const bytes = sharePdf.current.base64;
+        await FileSystem.writeAsStringAsync(uri, bytes, { encoding: FileSystem.EncodingType.Base64 });
+        const info = await FileSystem.getInfoAsync(uri);
+        const expectedSize = bytes.length * 3 / 4 - (bytes.endsWith('==') ? 2 : bytes.endsWith('=') ? 1 : 0);
+        if (!info.exists || info.isDirectory || info.size !== expectedSize) throw new Error('invalid-share-copy');
+        sharePdf.current = { uri, originalUri: sharePdf.current.originalUri, missing: sharePdf.current.missing };
+      }
+      pdfPhase = 'share-availability';
+      if (!await Sharing.isAvailableAsync()) throw new Error('File sharing unavailable');
+      pdfPhase = 'share';
+      await shareCasePdf(sharePdf.current.uri, Sharing.shareAsync, Platform.OS);
+      setShareStatus((language === 'ha' ? 'An rufe zaɓin rabawar PDF. Ba a tabbatar da isarwa ba; za ka iya sake gwadawa.' : 'PDF share sheet closed. Delivery is not confirmed; you can share again.') + (sharePdf.current.missing ? (language === 'ha' ? ' An nuna hotunan da ba a samu ba a PDF.' : ' Missing visit photos are labelled in the PDF.') : ''));
+    } catch (error) {
+      const stage = pdfPhase.startsWith('share') ? (language === 'ha' ? 'An shirya PDF amma ba a iya buɗe rabawa ba.' : 'PDF is ready, but sharing did not complete.') : (language === 'ha' ? 'Ba a kammala ƙirƙirar PDF ba.' : 'PDF generation did not complete.');
+      setShareStatus(`${stage} [${pdfPhase}: ${pdfFailureDetail(error)}] ${language === 'ha' ? 'Bayanan suna nan. Sake gwadawa.' : 'Your case and review are unchanged. Try again.'}`);
     } finally {
       sharePending.current = false;
       setSharing(false);
@@ -1001,10 +1057,10 @@ export default function App() {
       <Modal visible={sharePreview !== null} transparent animationType="fade" onRequestClose={() => { if (!sharing) setSharePreview(null); }}>
         <View style={styles.modalBackdrop}><View style={styles.modalCard} accessibilityViewIsModal>
           <Text style={styles.sectionTitle}>{language === 'ha' ? 'Duba rahoto kafin rabawa' : 'Review before sharing'}</Text>
-          <Text style={styles.body}>{language === 'ha' ? 'Za ka zaɓi wanda za a aika wa. Rubutu kawai; ba a haɗa hoto ba. Za ka iya zaɓar rubutun ka kwafa.' : 'Choose who receives this summary in your phone’s share options. Text only; no photo is attached. You can also select and copy the text.'}</Text>
+          <Text style={styles.body}>{language === 'ha' ? 'Tabbatar don ƙirƙirar PDF da wannan rahoto da hoton kowace ziyara tare da kwanan wata. Ana ƙirƙirarsa a wannan na’ura kawai. Za a nuna hotunan da ba a samu ba.' : 'Confirm to create a PDF with this complete summary and a dated crop photo for every saved visit. It is generated on this device only. Unavailable photos are labelled in the PDF.'}</Text>
           <ScrollView><Text selectable style={styles.body}>{sharePreview}</Text></ScrollView>
           {!!shareStatus && <Text accessibilityLiveRegion="polite" style={styles.body}>{shareStatus}</Text>}
-          <Pressable accessibilityRole="button" disabled={sharing} onPress={confirmShare} style={[styles.primaryButton, sharing && styles.disabled]}><Text style={styles.primaryText}>{sharing ? (language === 'ha' ? 'Ana buɗewa…' : 'Opening…') : t.share}</Text></Pressable>
+          <Pressable accessibilityRole="button" disabled={sharing} onPress={confirmShare} style={[styles.primaryButton, sharing && styles.disabled]}><Text style={styles.primaryText}>{sharing ? (language === 'ha' ? 'Ana shirya PDF…' : 'Preparing PDF…') : (language === 'ha' ? 'Ƙirƙira da raba PDF' : 'Create and share PDF')}</Text></Pressable>
           <Pressable accessibilityRole="button" disabled={sharing} onPress={() => setSharePreview(null)} style={styles.outlineButton}><Text style={styles.outlineText}>{language === 'ha' ? 'Rufe' : 'Close'}</Text></Pressable>
         </View></View>
       </Modal>

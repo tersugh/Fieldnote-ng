@@ -6,7 +6,7 @@ export type RecordingMetadata = {
 
 export function prepareTranscriptionWav(buffer: ArrayBuffer, recording: RecordingMetadata): {
   dataUrl: string;
-  info: { duration: number; sampleRate: number; channels: number; sampleWidth: number; peak: number; rms: number; sourceRate: number; sourceChannels: number };
+  info: { duration: number; sampleRate: number; channels: number; sampleWidth: number; peak: number; rms: number; sourceRate: number; sourceChannels: number; sourceDuration: number; sourcePeak: number; sourceRms: number; trimmed: boolean; tooQuiet: boolean };
 } {
   const input = new DataView(buffer);
   const tag = (offset: number) => String.fromCharCode(...new Uint8Array(buffer, offset, 4));
@@ -53,6 +53,14 @@ export function prepareTranscriptionWav(buffer: ArrayBuffer, recording: Recordin
     throw new Error('The finalized recording metadata does not match the WAV bytes. Record again or type your note.');
   }
   if (frames < rate / 4) throw new Error('The recording is too short. Speak for at least a moment and try again.');
+  let sourcePeak = 0;
+  let sourceSquares = 0;
+  for (let i = 0; i < frames * channels; i++) {
+    const value = input.getInt16(dataOffset + i * 2, true);
+    sourcePeak = Math.max(sourcePeak, Math.abs(value));
+    sourceSquares += value * value;
+  }
+  const sourceRms = Math.sqrt(sourceSquares / (frames * channels)) / 32768;
   const targetRate = 24000;
   const count = Math.min(targetRate * 30, Math.floor(frames * targetRate / rate));
   const output = new Uint8Array(44 + count * 2);
@@ -101,7 +109,10 @@ export function prepareTranscriptionWav(buffer: ArrayBuffer, recording: Recordin
     throw new Error('The finalized WAV (' + (frames / rate).toFixed(2) + ' s, ' + rate + ' Hz, ' + channels + ' channel(s), 16-bit PCM) contains silence or a constant signal. Check microphone permission and, on an emulator, the host microphone input. Record again or type your note.');
   }
   const info = { duration: count / targetRate, sampleRate: targetRate, channels: 1, sampleWidth: 16,
-    peak: peak / 32768, rms: Math.sqrt(squareSum / count) / 32768, sourceRate: rate, sourceChannels: channels };
+    peak: peak / 32768, rms: Math.sqrt(squareSum / count) / 32768, sourceRate: rate, sourceChannels: channels, sourceDuration: frames / rate,
+    sourcePeak: sourcePeak / 32768, sourceRms, trimmed: frames / rate > 30,
+    // Conservative near-silence gate, not a speech detector. Never amplify noise.
+    tooQuiet: peak / 32768 < 0.001 && Math.sqrt(squareSum / count) / 32768 < 0.0003 };
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   const chunks: string[] = [];
   let chunk = '';

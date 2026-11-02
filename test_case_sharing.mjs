@@ -33,7 +33,8 @@ function node(id) {
 const urls = [], revoked = [], downloads = [];
 const platform = {};
 const context = {
-  language: 'en', navigator: platform, Blob, File,
+  language: 'en', navigator: platform, Blob, File, structuredClone,
+  FieldnotePdf: {},
   document: {
     querySelector: node, activeElement: { focus() {} },
     createElement: type => { const el = node('created-' + created.length); created.push(el); if(type === 'a') downloads.push(el); return el; },
@@ -71,72 +72,87 @@ for (const fixture of [{}, {crop:'Yam', observations:[{symptoms:'Wilt',date:'bad
 assert.ok(context.buildCaseSummary({}, 'ha').includes('Babu ziyara'));
 assert.equal(android.exports.buildCaseSummary(nativeRecord, 'ha'), context.buildCaseSummary(record, 'ha'));
 
-assert.equal(await context.shareWebSummary(text, null, {}), 'unavailable');
-let payload;
-assert.equal(await context.shareWebSummary(text, null, {share: async value => {payload=value;}}), 'opened');
-assert.equal(payload.text, text);
-assert.equal(payload.files, undefined);
-const photo = new File(['fixture'], 'photo.jpg', {type:'image/jpeg'});
-assert.equal(await context.shareWebSummary(text, photo, {share:async value=>{payload=value;},canShare:()=>true}), 'opened');
-assert.equal(payload.files[0], photo);
-assert.equal(payload.text, text);
-assert.equal(await context.shareWebSummary(text, photo, {share:async()=>assert.fail(),canShare:()=>false}), 'unsupported-photo');
-assert.equal(await context.shareWebSummary(text, photo, {share:async()=>assert.fail(),canShare:()=>{throw new Error();}}), 'unsupported-photo');
-assert.equal(await context.shareWebSummary(text, null, {share:async()=>{throw {name:'AbortError'};}}), 'cancelled');
-assert.equal(await context.shareWebSummary(text, null, {share:async()=>{throw new Error();}}), 'failed');
-assert.equal(await context.copyCaseSummary(text, {}), false);
-assert.equal(await context.copyCaseSummary(text, {clipboard:{writeText:async()=>{throw new Error();}}}), false);
-let copied;
-assert.equal(await context.copyCaseSummary(text, {clipboard:{writeText:async value=>{copied=value;}}}), true);
-assert.equal(copied,text);
-context.downloadCaseSummary(text);
-assert.equal(downloads[0].download,'fieldnote-case-summary.txt');
-assert.equal(downloads[0].clicked,true);
-assert.equal(await urls[0].text(),text);
-assert.ok(revoked.length);
 
-// Review must precede any platform call; dynamic data uses value/textContent only.
-let shares=0;
-platform.share=async()=>{shares++;throw new Error('Fixture failure');};
-platform.canShare=()=>true;
+const { createRequire } = await import('node:module');
+const require = createRequire(import.meta.url);
+const pdf = require('./case-pdf.js');
+const file = new File(['%PDF-fixture'], 'fieldnote-maize.pdf', {type:'application/pdf'});
+let payload, downloaded = 0;
+assert.equal(await pdf.share(file, {}, async value => { assert.equal(value,file); downloaded++; }), 'downloaded');
+assert.equal(await pdf.share(file, {share:async()=>assert.fail(),canShare:()=>false}, async()=>{downloaded++;}), 'downloaded');
+assert.equal(await pdf.share(file, {share:async()=>assert.fail(),canShare:()=>{throw new Error();}}, async()=>{downloaded++;}), 'downloaded');
+assert.equal(downloaded,3);
+assert.equal(await pdf.share(file, {share:async value=>{payload=value;},canShare:()=>true}), 'opened');
+assert.equal(payload.files[0].type,'application/pdf');
+assert.equal(payload.files[0],file);
+assert.equal(payload.text,undefined);
+assert.equal(await pdf.share(file, {share:async()=>{throw {name:'AbortError'};},canShare:()=>true}), 'cancelled');
+assert.equal(await pdf.share(file, {share:async()=>{throw new Error();},canShare:()=>true}), 'failed');
+await assert.rejects(pdf.share(file, {}, async()=>{throw new Error('download failed');}), /download failed/);
+
+// The actual download fallback uses the PDF, its filename and an object URL.
+const previousDocument=globalThis.document, previousURL=globalThis.URL;
+const previousTimeout=globalThis.setTimeout;
+globalThis.document=context.document; globalThis.URL=context.URL; globalThis.setTimeout=context.setTimeout;
+try { pdf.download(file); assert.equal(downloads.at(-1).download,file.name); assert.equal(urls.at(-1),file); assert.equal(downloads.at(-1).clicked,true); }
+finally { globalThis.document=previousDocument; globalThis.URL=previousURL; globalThis.setTimeout=previousTimeout; }
+// No timer delay is needed for this fixture's object URL cleanup.
+let generated=0, shares=0, downloadsRequested=0, release;
+const waiting=new Promise(resolve=>{release=resolve;});
+context.FieldnotePdf={
+  canShareFile:()=>true,
+  create:async (snapshot, summary)=>{ generated++; assert.equal(summary,text); assert.notEqual(snapshot,record); await waiting; return {file,missing:1}; },
+  share:async()=>{shares++;return 'failed';},
+  download:async()=>{downloadsRequested++;},
+};
+const before=JSON.stringify(record);
 context.shareCaseWithWorker(record);
-assert.equal(shares,0);
+assert.equal(generated,0);
 assert.equal(node('#share-review').open,true);
 assert.equal(node('#share-summary').value,text);
-assert.equal(node('#share-photo-controls').hidden,false);
-await node('#share-with-photo').onclick();
+const first=node('#share-pdf').onclick();
+await node('#share-pdf').onclick();
+assert.equal(generated,1);
+assert.equal(node('#share-pdf').disabled,true);
+release(); await first;
+assert.equal(shares,0);
+assert.match(node('#share-status').textContent,/PDF ready/);
+await node('#share-pdf').onclick();
 assert.equal(shares,1);
-assert.equal(node('#share-text').disabled,false);
+assert.equal(node('#share-pdf').disabled,false);
+assert.match(node('#share-status').textContent,/Retry sharing/);
 assert.equal(node('#share-summary').value,text);
-await node('#share-copy').onclick();
-assert.equal(node('#share-summary').selected,true);
-node('#share-close').onclick();
-assert.equal(node('#share-review').open,false);
-delete platform.share;
-delete platform.canShare;
-context.shareCaseWithWorker({crop:'Yam',observations:[]});
-assert.equal(node('#share-photo-controls').hidden,true);
-assert.equal(node('#share-text').hidden,true);
+context.FieldnotePdf.share=async()=>{shares++;return 'cancelled';};
+await node('#share-pdf').onclick();
+assert.equal(generated,1);
+assert.match(node('#share-status').textContent,/cancelled/);
+await node('#share-download').onclick();
+assert.equal(downloadsRequested,1);
+assert.equal(JSON.stringify(record),before);
+context.FieldnotePdf.create=async()=>{throw new Error('PDF failure');};
+context.shareCaseWithWorker(record);
+await node('#share-pdf').onclick();
+assert.match(node('#share-status').textContent,/Try again/);
+assert.equal(node('#share-pdf').disabled,false);
+assert.equal(node('#share-summary').value,text);
 
+const nativePdf={exports:{}};
+runInNewContext(ts.transpileModule(await readFile(new URL('mobile/casePdf.ts',root),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,nativePdf);
 let nativePayload;
-await android.exports.shareCaseSummary(text, async content => {nativePayload=content;return {action:'sharedAction'};});
-assert.equal(nativePayload.message,text);
-assert.equal(nativePayload.url,undefined);
-await android.exports.shareCaseSummary(text, async()=>({action:'dismissedAction'}));
-await assert.rejects(android.exports.shareCaseSummary(text, async()=>{throw new Error('Unavailable');}),/Unavailable/);
-// Verify wiring of the native review, selectable fallback, and failure path.
-assert.match(mobile, /setSharePreview\(buildCaseSummary\(record, language\)\)/);
-assert.match(mobile, /<Text selectable style=\{styles.body\}>\{sharePreview\}<\/Text>/);
-assert.match(mobile, /onPress=\{confirmShare\}/);
-assert.match(mobile, /Could not open sharing\. Try again or select and copy/);
-assert.doesNotMatch(helper, /fetch\(|photoUri/);
-export const results = [
-  'Web and Android summaries match, including visits, guidance and clarification answers',
-  'Missing optional fields, empty cases, invalid dates, Hausa text and older guidance handled',
-  'Untrusted content remains literal in review; native preview uses selectable Text',
-  'Web native text/photo sharing, unsupported capability, cancellation and failure handled',
-  'Web clipboard success/denial/unavailable and UTF-8 download fallback passed',
-  'Web review precedes sharing, survives failure, and hides unsupported photo controls',
-  'Android native-share adapter passes text only, handles dismissal, and propagates failure for retry',
+await nativePdf.exports.shareCasePdf('file:///cache/case.pdf',async(uri,options)=>{nativePayload={uri,options};});
+assert.equal(nativePayload.uri,'file:///cache/case.pdf');
+assert.equal(nativePayload.options.mimeType,'application/pdf');
+await assert.rejects(nativePdf.exports.shareCasePdf('file:///cache/case.pdf',async()=>{throw new Error('Unavailable');}),/Unavailable/);
+assert.match(mobile,/onPress=\{confirmShare\}/);
+assert.match(mobile,/printToFileAsync\(\{ html/);
+assert.match(mobile,/PDF generation did not complete/);
+assert.doesNotMatch(await readFile(new URL('mobile/casePdf.ts',root),'utf8'),/fetch\(/);
+export const results=[
+ 'Web and Android retain the complete reviewed summary, visit order, Q&A, guidance and language handling',
+ 'Missing fields and untrusted farmer/model text remain safe and readable in review',
+ 'PDF file sharing checks capability and falls back to a named PDF download',
+ 'Web share cancellation, failure and download failure remain retryable',
+ 'Confirmation precedes generation; duplicate taps generate once and retries retain review/case',
+ 'Android shares the local file as application/pdf and propagates failures without mutating the case',
 ];
 console.log(results.map(result=>'PASS: '+result).join('\n'));

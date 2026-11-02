@@ -63,12 +63,3 @@ export function buildCaseSummary(record: SavedCase, language: 'en' | 'ha' = 'en'
   lines.push('', label('AI guidance may be uncertain. The farmer is choosing to request a second opinion; this is not a confirmed diagnosis.', 'Shawarar AI na iya yin kuskure. Manomi ya zaɓi neman ƙarin ra’ayi; wannan ba tabbataccen bincike ba ne.'));
   return lines.join('\n');
 }
-
-// React Native's Android Share API accepts text; local photo URLs are iOS-only.
-// Keep the text independent of photo access and never claim delivery was confirmed.
-export async function shareCaseSummary(
-  message: string,
-  share: (content: { title: string; message: string }) => Promise<unknown>,
-): Promise<void> {
-  await share({ title: 'Fieldnote', message });
-}

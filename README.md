@@ -19,7 +19,7 @@ English/Hausa interface labels, typed notes and clarification answers are suppor
 | New-photo follow-up visit | Muse Spark, `POST /api/followup` | Both clients append a dated visit and compare it with the immediately preceding photo/note. | Comparison/retry/history tests pass with mocks. |
 | Answer a clarification question | Muse Spark, `POST /api/refine` | Both clients send original visit context, prior assessment, question, answer and completed Q&A history. Revised advice stays on that visit; no new photo visit. | Web answer/failure/retry tests pass. Server refine tests exist but were not rerun; Android UI/refine integration is not device-verified. |
 | Local casebook, offline save and retry | IndexedDB on web; SQLite + private photos on Android | Save before analysis; reopen saved visits; manually retry with the stored photo. Success updates the same visit. Connection failures stay pending; input/service errors need attention. No background upload/retry. | Offline save, simulated reload, failures, duplicate-tap guards and same-visit updates pass. Actual storage/restart durability remains unverified. |
-| Optional extension-worker sharing | No model call | Review a summary first. Web: native share, optional capability-checked photo, copy/download fallbacks and separate print action. Android: native **text-only** share and selectable text; no photo attachment. | Summary, safe rendering, mocked sharing/fallback tests pass. Real share sheets/receiving apps are unverified. |
+| Optional extension-worker sharing | Local PDF; no model call | Review the full summary, then confirm PDF creation. The PDF retains all summary text and adds a dated photo page for every visit in saved order, embedding local images or labelling missing photos. Web shares the PDF file where supported, otherwise downloads it; Android generates locally and shares `application/pdf`. | Real PDF/image/font tests and mocked sharing/fallback tests pass. Real browser/device share sheets and receiving apps remain unverified. |
 | Action checklist | No model call | Both clients snapshot existing advice verbatim; save To do/Done/Skipped states and short notes per visit. Later advice does not replace that checklist. | Save/reopen/progress/wording tests pass with simulated stores. |
 | Farmer-set recheck reminder | No model call | Set/change/dismiss a case reminder; due cases link to a photo follow-up on the same case. **In-app only on both platforms. Android does not notify when closed**; `expo-notifications` is absent. | Date/due/dismissal/same-case tests pass. Reminder timing and foreground refresh are not separately user-verified. |
 | Select an affected image area | SAM 3.1 (`sam-3-1`), proposed | **Unimplemented:** no segmentation endpoint, model request or client integration found. | No implementation tests or manual verification. |
@@ -85,6 +85,7 @@ node test_web_panel.mjs
 node test_web_actions.mjs
 node test_pending_android.mjs
 node test_case_sharing.mjs
+node test_case_pdf.mjs
 node test_case_actions.mjs
 python3 -m unittest -v
 python3 -m py_compile server.py
@@ -105,6 +106,8 @@ Previously recorded automated results on **30 October 2026**: **32 distinct clie
 
 ## Repository guide
 
+**PDF sharing, 1 November 2026:** web uses vendored pdfmake 0.2.20 and Noto Sans fonts, with no runtime CDN fetch. After creation, a fresh **Share PDF** tap preserves browser share permissions; **Download PDF** is always available. Android uses SDK-compatible `expo-print` 58.0.7 and `expo-sharing` 58.0.20 (`npm ci` installs them). Generated Android PDFs remain in app cache for sharing/retry; the OS can clear that cache. Generation does not upload data, call AI or change the saved case. Cancel/failure leaves the review open for retry. The generated file includes photos, so farmers should review the summary and choose recipients deliberately.
+
 - [server.py](server.py): static development host and four stateless API routes.
 - [app.js](app.js), [index.html](index.html), [styles.css](styles.css): web client.
 - [mobile/](mobile/): Android client, local persistence and input helpers.
@@ -115,6 +118,6 @@ Previously recorded automated results on **30 October 2026**: **32 distinct clie
 
 No screenshots are bundled in the project-owned source tree. Previously user-verified flows are recorded above; no fresh combined release smoke test or complete demo recording is established by those individual confirmations.
 
-The immediate remaining work includes a fresh combined release smoke test, reliable transcription checks, restart/storage testing, and Hausa/agronomic review. SAM 3.1 segmentation remains proposed and unimplemented. Closed-app notifications, an offline web app shell, cross-device sync and Android photo-sharing/print export are not implemented; they are not promised capabilities of this version.
+The immediate remaining work includes a fresh combined release smoke test, reliable transcription checks, restart/storage testing, and Hausa/agronomic review. SAM 3.1 segmentation remains proposed and unimplemented. Closed-app notifications, an offline web app shell and cross-device sync are not implemented. Photo-inclusive PDF sharing is implemented; actual browser/device sharing still needs verification.
 
 The [build log](HACKATHON_BUILD_LOG.md) records work beginning 26 October 2026 for the project's stated 26 October–4 November hackathon window: web/server integration, Android capture and local storage, photo comparisons, clarification, retry, sharing, checklists and reminders. It records Codex-assisted changes and verification limits. Historical scaffold/planning entries describe earlier stages; submission readiness, originality and event eligibility have not been independently verified by this documentation audit.
